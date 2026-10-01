@@ -108,11 +108,38 @@ class SodiumApiContractTest {
 		return "";
 	}
 
+	/**
+	 * Sodium jar'ını Gradle modül cache'inde bulur.
+	 *
+	 * <p>Burası bir zamanlar tüm {@code ~/.gradle/caches} ağacını özyinelemeli olarak
+	 * yürüyordu: 19.897 dosya, test sınıfının toplam süresinin büyük kısmı. Oysa Gradle'in
+	 * modül cache düzeni <code>files-2.1/&lt;grup&gt;/&lt;modül&gt;/&lt;sürüm&gt;/&lt;hash&gt;/&lt;jar&gt;</code>
+	 * şeklindedir — {@code sodium} modülüne grup dizini seviyesinden doğrudan
+	 * gidilebilir. Tam tarama 19.897 dosyayı gezerken burada yalnız birkaç dizin
+	 * incelenir.
+	 *
+	 * <p>Grup adı ({@code maven.modrinth}, {@code org.jamalamsoftware} vb.) kaynak
+	 * kontrolünde tutulmuyor ve değişebilir, bu yüzden <em>sabit yazılmadı</em>: grup
+	 * dizinleri listelenir ve içinde {@code sodium} olanlara girilir. Düzen tanınmazsa
+	 * sorun çıkmasın diye eski yönteme düşülür.
+	 */
 	private static Optional<Path> findSodiumJarInCache() {
 		Path cacheRoot = Path.of(System.getProperty("user.home"), ".gradle", "caches");
 		if (!Files.isDirectory(cacheRoot)) {
 			return Optional.empty();
 		}
+		Path modules = cacheRoot.resolve("modules-2").resolve("files-2.1");
+		if (Files.isDirectory(modules)) {
+			try {
+				Optional<Path> targeted = scanSodiumModuleDirs(modules);
+				if (targeted.isPresent()) {
+					return targeted;
+				}
+			} catch (IOException e) {
+				// Bilinen düzen tutmuyorsa aşağıdaki geniş tarama denenir.
+			}
+		}
+		// Bilinen düzen tutmuyorsa eski geniş tarama.
 		String version = sodiumVersion();
 		try (Stream<Path> files = Files.walk(cacheRoot)) {
 			return files.filter(Files::isRegularFile)
@@ -124,6 +151,65 @@ class SodiumApiContractTest {
 		} catch (IOException e) {
 			throw new IllegalStateException("Gradle mod cache'i taranamadı", e);
 		}
+	}
+
+	/**
+	 * {@code files-2.1/<grup>/sodium} dizinlerini gezer. Grup adı sabit değildir,
+	 * bu yüzden her grup dizininin altına bakılır.
+	 */
+	private static Optional<Path> scanSodiumModuleDirs(Path modules) throws IOException {
+		String version = sodiumVersion();
+		try (Stream<Path> groups = Files.list(modules)) {
+			for (Path group : groups.filter(Files::isDirectory).toList()) {
+				Path sodium = group.resolve("sodium");
+				if (!Files.isDirectory(sodium)) {
+					continue;
+				}
+				Optional<Path> hit = sodiumJarUnder(sodium, version);
+				if (hit.isPresent()) {
+					return hit;
+				}
+			}
+		}
+		return Optional.empty();
+	}
+
+	/** {@code sodium/<sürüm>/<hash>/sodium-*.jar} düzenini okur. */
+	private static Optional<Path> sodiumJarUnder(Path sodium, String version) throws IOException {
+		try (Stream<Path> versions = Files.list(sodium)) {
+			for (Path v : versions.filter(Files::isDirectory).toList()) {
+				String vname = v.getFileName().toString();
+				if (!version.isEmpty() && !vname.contains(version)) {
+					continue;
+				}
+				Optional<Path> hit = firstSodiumJarIn(v);
+				if (hit.isPresent()) {
+					return hit;
+				}
+			}
+		}
+		return Optional.empty();
+	}
+
+	private static Optional<Path> firstSodiumJarIn(Path dir) throws IOException {
+		try (Stream<Path> dirs = Files.list(dir)) {
+			for (Path d : dirs.filter(Files::isDirectory).toList()) {
+				try (Stream<Path> in = Files.list(d)) {
+					// Listeyi try bloğu içinde toplamak zorunlu: stream terminal
+					// işlem yapılmadan döndürülürse close() onu tüketilmeden
+					// kapatır ("source already consumed or closed").
+					Optional<Path> hit = in.filter(Files::isRegularFile)
+							.filter(p -> p.getFileName().toString().endsWith(".jar"))
+							.filter(p -> p.getFileName().toString().startsWith("sodium-"))
+							.filter(p -> !p.getFileName().toString().contains("sources"))
+							.findFirst();
+					if (hit.isPresent()) {
+						return hit;
+					}
+				}
+			}
+		}
+		return Optional.empty();
 	}
 
 	// ---------------------------------------------------------------------
