@@ -1,6 +1,6 @@
 package com.fpssync.mixin;
 
-import com.fpssync.FrameLimiter;
+import com.fpssync.FpsSyncMod;
 import com.mojang.serialization.Codec;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.GameOptions;
@@ -46,8 +46,8 @@ public class GameOptionsMixin {
                 value -> {
                     MinecraftClient client = MinecraftClient.getInstance();
                     if (value <= 0) {
-                        FrameLimiter.setEnabled(true);
-                        FrameLimiter.setManualLimit(0);
+                        FpsSyncMod.LIMITER.setEnabled(true);
+                        FpsSyncMod.LIMITER.setManualLimit(0);
 
                         if (client != null && client.getWindow() != null) {
                             client.getWindow().setFramerateLimit(Integer.MAX_VALUE);
@@ -56,8 +56,8 @@ public class GameOptionsMixin {
                         return;
                     }
 
-                    FrameLimiter.setEnabled(false);
-                    FrameLimiter.setManualLimit(value >= 1010 ? 0 : value);
+                    FpsSyncMod.LIMITER.setEnabled(false);
+                    FpsSyncMod.LIMITER.setManualLimit(value >= 1010 ? 0 : value);
 
                     if (client != null && client.getWindow() != null) {
                         client.getWindow().setFramerateLimit(value >= 1010 ? Integer.MAX_VALUE : value);

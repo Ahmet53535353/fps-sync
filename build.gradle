@@ -12,6 +12,7 @@ base {
 
 repositories {
 	maven { url "https://api.modrinth.com/maven" }
+	mavenCentral()
 }
 
 dependencies {
@@ -23,7 +24,20 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 	modCompileOnly ("maven.modrinth:sodium:${project.sodium_version}-fabric")
-	
+
+	testImplementation "org.junit.jupiter:junit-jupiter:5.10.2"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+	useJUnitPlatform()
+	// Hangi Sodium sürümüne karşı test edildiği belirsiz olmasın.
+	systemProperty "sodium.version", project.sodium_version
+	workingDir = project.projectDir
+	testLogging {
+		events "passed", "skipped", "failed"
+		showStandardStreams = true
+	}
 }
 
 processResources {
