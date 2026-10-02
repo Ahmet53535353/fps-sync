@@ -3,7 +3,7 @@
 	"id": "fps-sync",
 	"version": "${version}",
 	"name": "FPS-Sync",
-	"description": "Limits FPS to the monitors refresh rate without V-Sync.",
+	"description": "Limits FPS to the monitor's refresh rate without V-Sync. Optional: also adds an FPS Sync entry to Sodium's video settings when Sodium is installed.",
 	"authors": [
 		"Pasi"
 	],
@@ -14,13 +14,16 @@
 		"client": ["com.fpssync.FpsSyncMod"]
 	},
 	"mixins": [
-		"fps-sync.mixins.json"
+		"fps-sync.mixins.json",
+		"fps-sync.sodium.mixins.json"
 	],
 	"depends": {
 		"fabricloader": ">=0.18.4",
 		"minecraft": "~1.21",
 		"java": ">=21",
-		"fabric-api": "*",
+		"fabric-api": "*"
+	},
+	"suggests": {
 		"sodium": "*"
 	}
 }
