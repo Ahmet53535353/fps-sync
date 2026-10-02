@@ -39,11 +39,31 @@ public final class FramePacingRecorder {
     /** İnce gecikme kovasının genişliği: 0.05 ms. */
     public static final long LATE_FINE_STEP_NS = 50_000L;
 
-    /** Park aşımı histogramının üst sınırı: 1 ms. */
-    public static final long OVERSHOOT_MAX_NS = 1_000_000L;
+    /**
+     * Park aşımı histogramının üst sınırı: 64 ms.
+     *
+     * <p>Değer 1 ms'de <b>değildir</b>. 2026-10-02'deki gerçek koşuda en kötü aşım
+     * 35.8 ms çıktı ve medyan 1 ms'in üstündeydi; 1 ms'lik tavan, kararın verilmesi
+     * gereken aralığın tamamını taşma sayacına atıyordu.
+     */
+    public static final long OVERSHOOT_MAX_NS = 64_000_000L;
 
-    /** Park aşımı kovasının genişliği: 2 µs. */
-    public static final long OVERSHOOT_STEP_NS = 2_000L;
+    /**
+     * Park aşımı kovasının genişliği: 10 µs.
+     *
+     * <p>1 ms ile 1.5 ms'yi ayırt etmeye yeter. Daha ince çözünürlük kova sayısını
+     * bellek maliyetiyle büyütür, kararı değiştirmez.
+     */
+    public static final long OVERSHOOT_STEP_NS = 10_000L;
+
+    /**
+     * İstenen yüzdelik histogramın dışına düştüğünde dönen değer.
+     *
+     * <p>Eski davranış son kovanın değerini döndürüyordu; bu, "ölçemedim" ile
+     * "tam olarak bu değer" arasındaki farkı siliyordu. Gerçek koşuda 1 ms'lik
+     * tavanda medyan <em>ve</em> p95 için tam olarak 1000.0 µs basıyordu.
+     */
+    public static final long SATURATED = -1L;
 
     static final int LATE_BUCKETS = (int) (LATE_FINE_MAX_NS / LATE_FINE_STEP_NS) + 1;
     static final int OVERSHOOT_BUCKETS = (int) (OVERSHOOT_MAX_NS / OVERSHOOT_STEP_NS) + 1;
@@ -59,6 +79,8 @@ public final class FramePacingRecorder {
         long parkNsTotal;
         long overshootOverflow;
         long overshootMaxNs;
+        long parkEarlyCalls;
+        long parkEarlyNsTotal;
         long spinNsTotal;
         long spinEntries;
         final int[] lateness = new int[LATE_BUCKETS];
@@ -74,6 +96,8 @@ public final class FramePacingRecorder {
             parkNsTotal = 0;
             overshootOverflow = 0;
             overshootMaxNs = 0;
+            parkEarlyCalls = 0;
+            parkEarlyNsTotal = 0;
             spinNsTotal = 0;
             spinEntries = 0;
             java.util.Arrays.fill(lateness, 0);
@@ -133,7 +157,13 @@ public final class FramePacingRecorder {
         if (parkCalls > 0) {
             r.parkCalls += parkCalls;
             r.parkNsTotal += parkNs;
-            if (overshootNs > 0) {
+            if (overshootNs < 0) {
+                // Park istenenden ERKEN döndü: kalan süre spin ile yakıldı.
+                // Negatif aşım önceden 0'a yassılanıyordu, bu yüzden spin'in neden
+                // 100 µs'luk pencerenin çok üstüne çıktığı görünmüyordu.
+                r.parkEarlyCalls++;
+                r.parkEarlyNsTotal += -overshootNs;
+            } else if (overshootNs > 0) {
                 if (overshootNs > r.overshootMaxNs) {
                     r.overshootMaxNs = overshootNs;
                 }
@@ -220,24 +250,36 @@ public final class FramePacingRecorder {
         return firstWaitAtNs;
     }
 
+/**
+     * Histogramdan yüzdelik hesaplar.
+     *
+     * @param hist  kova sayacı
+     * @param count toplam örnek sayısı (taşma dahil)
+     * @param step  kova genişliği
+     * @param q     istenen yüzdelik
+     * @return değer; örneklerin yeterli kısmı histogramın dışındaysa {@link #SATURATED}
+     */
     private static long percentile(int[] hist, long count, long step, double q) {
-        if (count <= 0) {
-            return 0;
-        }
-        long target = (long) Math.ceil(q * count);
-        if (target < 1) {
-            target = 1;
-        }
-        long seen = 0;
-        for (int i = 0; i < hist.length; i++) {
-            seen += hist[i];
-            if (seen >= target) {
-                // Kova alt sınırı: değer [i·step, (i+1)·step) aralığında.
-                return i * step;
-            }
-        }
-        return (hist.length - 1) * step;
-    }
+          if (count <= 0) {
+              return 0;
+          }
+          long target = (long) Math.ceil(q * count);
+          if (target < 1) {
+              target = 1;
+          }
+          long seen = 0;
+          for (int i = 0; i < hist.length; i++) {
+              seen += hist[i];
+              if (seen >= target) {
+                  // Kova alt sınırı: değer [i·step, (i+1)·step) aralığında.
+                  return i * step;
+              }
+          }
+// Örneklerin bu kadarı histogramın dışında: yüzdelik burada çözülemez.
+          // Sessizce son kova değerini döndürmek "ölçemedim" ile "tam bu değer"
+          // arasındaki farkı siliyordu; gerçek koşuda 1000.0 µs gibi görünüyordu.
+          return SATURATED;
+      }
 
     // --- bekleyen (sınırlayıcı aktif) rejim ---
 
@@ -310,9 +352,44 @@ public final class FramePacingRecorder {
      * Park'ın en büyük aşımı.
      * @return park'ın en büyük aşımı, nanosaniye
      */
-    public long activeOvershootMaxNs() {
-        return active.overshootMaxNs;
-    }
+public long activeOvershootMaxNs() {
+          return active.overshootMaxNs;
+      }
+
+      /**
+       * Sınırlayıcı beklerken histogramın üst sınırını aşan aşım sayısı.
+       *
+       * <p>Bu sayı sıfır değilse ilgili yüzdelikler {@link #SATURATED} döner. Daha önce
+       * bu sayaç yalnızca içeride tutuluyor, raporda hiç görünmüyordu; o yüzden
+       * "ölçemedim" ile "aşım tam 1 ms" ayırt edilemiyordu.
+       *
+       * @return tavanı aşan park çağrısı sayısı
+       */
+      public long activeOvershootOverflow() {
+          return active.overshootOverflow;
+      }
+
+      /**
+       * Park'ın istenenden <em>erken</em> döndüğü çağrı sayısı.
+       *
+       * <p>Eski ölçümde negatif aşım 0'a yassılanıyordu. Bu yüzden kalan sürenin
+       * spin ile yakıldığı miktar görünmüyor ve spin'in neden 100 µs'luk pencerenin
+       * çok üstüne çıktığı açıklanamıyordu.
+       *
+       * @return erken dönüş sayısı
+       */
+      public long activeParkEarlyCalls() {
+          return active.parkEarlyCalls;
+      }
+
+      /**
+       * Erken dönüşlerin toplam büyüklüğü.
+       *
+       * @return erken dönen sürenin toplamı, nanosaniye
+       */
+      public long activeParkEarlyNsTotal() {
+          return active.parkEarlyNsTotal;
+      }
 
     /**
      * Park aşımının medyanı.

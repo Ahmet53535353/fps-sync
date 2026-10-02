@@ -176,8 +176,13 @@ public class FrameLimiter {
     int parkCallsLastFrame;
     /** Bu karede park için istenen süre toplamı. */
     long parkRequestedNsLastFrame;
-    /** Bu karede park'ın ortalama aşımı. */
-    long parkOvershootNsLastFrame;
+/**
+       * Bu karede park'ın aşımı, <b>işaretli</b>: pozitif geç döndü, negatif erken döndü.
+       *
+       * <p>Erken dönüşün ayrı tutulması gerekir: kalan süre spin ile yakılır, yani
+       * erken dönüş miktarı spin süresini doğrudan açıklar.
+       */
+      long parkOvershootNsLastFrame;
     /** Bu karede harcanan spin süresi. */
     long spinNsLastFrame;
     /** Beklemeden önceki kare için hedef bütçe; 0 ise sınırlayıcı kapalıydı. */
@@ -286,25 +291,33 @@ public class FrameLimiter {
         if (sleepNs > 0) {
             parkCallsLastFrame = 1;
             parkRequestedNsLastFrame += sleepNs;
-            try {
-                // Nanosaniye değeri doğrudan korunur. Thread.sleep(ms) kullanılsaydı
-                // kırpma 0.1 ms'lik spin penceresini yutardı: kalan süre 1.1 ms'nin
-                // altına düşünce uyku hiç yapılmaz ve kalan sürenin tamamı spin
-                // edilirdi. Ölçülen parkNanos aşımı bu makinede ~90 µs, Thread.sleep
-                // aşımı ~150-200 µs; yani pencere gerçekten 0.1 ms olarak uygulanır.
-                sleeper.park(sleepNs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
+try {
+                  // Nanosaniye değeri doğrudan korunur. Thread.sleep(ms) kullanılsaydı
+                  // kırpma 0.1 ms'lik spin penceresini yutardı: kalan süre 1.1 ms'nin
+                  // altına düşünce uyku hiç yapılmaz ve kalan sürenin tamamı spin
+                  // edilirdi.
+                  //
+                  // Aşımın ne kadar olduğu BURADA ölçülmez; oynanışta ölçülür. Daha önce
+                  // buraya "parkNanos aşımı bu makinede ~90 µs" yazılmıştı. Bu sayı
+                  // boş bir JVM'de alınmıştı ve oyun içinde yanlış çıktı: 2026-10-02
+                  // koşusunda medyan 1 ms'in üstünde, en kötü 35.8 ms. Bir koşulda
+                  // ölçülen sayıyı başka koşula taşımak, tahmini ölçüm gibi sunmak
+                  // demektir.
+                  sleeper.park(sleepNs);
+              } catch (InterruptedException e) {
+                  Thread.currentThread().interrupt();
+              }
+          }
 
-        // `spinStart` park'tan hemen sonra okunduğu için park aşımı ek bir
-        // nanoTime çağrısı olmadan hesaplanır: uyanma anı zaten elimizde.
-        long spinStart = nanoTime.getAsLong();
-        if (sleepNs > 0) {
-            long actual = spinStart - now - sleepNs;
-            parkOvershootNsLastFrame = actual > 0 ? actual : 0;
-        }
+          // `spinStart` park'tan hemen sonra okunduğu için park aşımı ek bir
+          // nanoTime çağrısı olmadan hesaplanır: uyanma anı zaten elimizde.
+          long spinStart = nanoTime.getAsLong();
+          if (sleepNs > 0) {
+              // İşaretli saklanır: pozitif = geç döndü, negatif = erken döndü.
+              // Erken dönüş daha önce 0'a yassılanıyordu; oysa kalan süre spin ile
+              // yakıldığı için erken dönüş miktarı doğrudan spin süresini açıklar.
+              parkOvershootNsLastFrame = spinStart - now - sleepNs;
+          }
         Runnable hook = spinHook;
         if (hook == NO_SPIN_HOOK) {
             while (nanoTime.getAsLong() < nextFrameTime) {

@@ -73,15 +73,26 @@ public final class FpsSyncStatusReport {
                     .append("  (").append(r.activeLateFrames()).append(" kare)\n");
             if (r.activeParkCalls() > 0) {
                 b.append("  park        ").append(r.activeParkCalls())
-                        .append(" çağrı · ortalama ")
+                        .append(" çağrı · istenen ortalama ")
                         .append(ms(r.activeParkNsTotal() / r.activeParkCalls())).append('\n');
-                b.append("  park aşımı  medyan ").append(us(r.activeOvershootMedianNs()))
-                        .append(" · p95 ").append(us(r.activeOvershootPercentileNs(0.95)))
-                        .append(" · en kötü ").append(us(r.activeOvershootMaxNs())).append('\n');
+                b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
+                if (r.activeOvershootOverflow() > 0) {
+                    b.append("               ↳ tavan dışı ")
+                            .append(r.activeOvershootOverflow()).append(" çağrı (")
+                            .append(percent(100.0 * r.activeOvershootOverflow()
+                                    / r.activeParkCalls()))
+                            .append("), taşma sayısıyla raporlandı\n");
+                }
+                if (r.activeParkEarlyCalls() > 0) {
+                    b.append("  park erken  ").append(r.activeParkEarlyCalls())
+                            .append(" çağrı · ortalama ")
+                            .append(ms(r.activeParkEarlyNsTotal() / r.activeParkEarlyCalls()))
+                            .append(" erken döndü (kalanı spin ile yakıldı)\n");
+                }
             }
             if (r.activeSpinEntries() > 0) {
                 b.append("  spin        toplam ").append(ms(r.activeSpinNsTotal()))
-                        .append(" · kare başına ")
+                        .append(" · spin eden kare başına ")
                         .append(us(r.activeSpinNsTotal() / r.activeSpinEntries())).append('\n');
             }
         }
@@ -102,6 +113,31 @@ public final class FpsSyncStatusReport {
                 ? "henüz olmadı"
                 : num(r.firstWaitAtNs() / 1_000_000_000.0, 1) + " sn sonra").append('\n');
         return b.toString();
+    }
+
+    /**
+     * Park aşımı dağılımını biçimlendirir.
+     *
+     * <p>Bir yüzdelik {@link FramePacingRecorder#SATURATED} dönüyorsa <b>sayı basılmaz</b>;
+     * bunun yerine yüzdeliğin histogram dışına düştüğü açıkça yazılır. Daha önce
+     * sessizce son kovanın değeri basılıyordu: 1 ms'lik tavonda medyan ve p95 için
+     * tam olarak "1000.0 µs" çıkıyor, bu da "ölçemedim" ile "tam 1 ms" arasındaki
+     * farkı siliyordu.
+     */
+    private static String overshootLine(FramePacingRecorder r) {
+        long median = r.activeOvershootMedianNs();
+        long p95 = r.activeOvershootPercentileNs(0.95);
+        StringBuilder b = new StringBuilder(96);
+        b.append("medyan ").append(value(median)).append(" · p95 ").append(value(p95));
+        if (median == FramePacingRecorder.SATURATED || p95 == FramePacingRecorder.SATURATED) {
+            b.append(" · en kötü ").append(us(r.activeOvershootMaxNs()))
+                    .append(" (dağılım ölçüm aralığının dışında)");
+        }
+        return b.toString();
+    }
+
+    private static String value(long ns) {
+        return ns == FramePacingRecorder.SATURATED ? "ölçülemedi" : us(ns);
     }
 
     private static String ms(long ns) {
