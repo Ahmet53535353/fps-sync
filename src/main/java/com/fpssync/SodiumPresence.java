@@ -29,11 +29,10 @@ public final class SodiumPresence {
     public static final String SODIUM_MOD_ID = "sodium";
 
     /**
-     * Enjekte edilen Sodium sınıfı. Yükleme sırasında mevcutsa Sodium kuruludur.
+     * Enjekte edilen Sodium sınıfının <b>kaynak yolu</b>.
      *
-     * <p>Bu sınıfa referans verilmesi <b>yükleme tetiklemez</b>; yalnız
-     * {@link Class#forName} çağrısı tetikler. Olmayan bir sınıf için
-     * {@code NoClassDefFoundError} vereceğinden varlık kontrolü de yapılır.
+     * <p>Salt okunur: bu alana referans vermek sınıfı yüklemez, yalnızca
+     * {@link ClassLoader#getResource} araması yapılır.
      */
     static final String INJECTION_TARGET_CLASS =
             "net.caffeinemc.mods.sodium.client.gui.SodiumConfigBuilder";
@@ -46,27 +45,47 @@ public final class SodiumPresence {
      *
      * <p>İki bağımsız işaretten <b>herhangi biri</b> yeterlidir:
      * <ol>
-     *   <li>Sınıf gerçekten yüklenebiliyor mu (kurulum bütünlüğü, en güvenilir),</li>
+     *   <li>Sınıfın kaynak dosyası sınıf yolunda var mı (kurulum bütünlüğü),</li>
      *   <li>yoksa mod kimliği FabricLoader'da kayıtlı mı (sürüm farkı, kırık kurulum).</li>
      * </ol>
      *
-     * <p>Sıra tersine çevrilmedi: önce sınıf, çünkü mod kimliği doğru olsa bile jar
-     * bozuksa enjeksiyon yine patlar ve oyun çöker — oysa sınıf testi başarısız
-     * olduğunda mixin sessizce uygulanmaz.
+     * <p><b>Sınıf burada yüklenmez.</b> Doğrudan {@code SodiumConfigBuilder.class}
+     * referansı verilseydi JVM sınıfı yüklerdi; Mixin hedef sınıfın kendisinin
+     * dönüşümden <em>önce</em> yüklenmesini yasaklar ve
+     * {@code MixinTargetAlreadyLoadedException} ile oyun çöker. Bu hata 2026-10-02'de
+     * gerçek oyunda oluştu: yalnızca Sodium kurulu olduğunda görünür, çünkü
+     * Sodium yokken arama zaten bulamaz.
+     *
+     * <p>Bu yüzden {@link Class#forName} <b>kullanılmaz</b>; yalnızca
+     * {@code .class} dosyasının varlığına bakılır.
      */
     public static boolean isPresent() {
-        return isClassPresent() || isModLoaded();
+        return isClassAvailable() || isModLoaded();
     }
 
-    /** Enjekte edilen Sodium sınıfı yüklenebiliyor mu? */
-    static boolean isClassPresent() {
-        try {
-            Class.forName(INJECTION_TARGET_CLASS, false,
-                    SodiumPresence.class.getClassLoader());
-            return true;
-        } catch (ClassNotFoundException | LinkageError e) {
-            return false;
-        }
+    /**
+     * Enjekte edilen Sodium sınıfı sınıf yolunda var mı?
+     *
+     * <p>Sınıfı yüklemez. {@link ClassLoader#getResource} yalnızca dosya arar.
+     */
+    static boolean isClassAvailable() {
+        return isClassAvailable(INJECTION_TARGET_CLASS, SodiumPresence.class.getClassLoader());
+    }
+
+    /**
+     * Verilen sınıfın kaynak dosyası, verilen yükleyicide sınıf yolunda var mı?
+     *
+     * <p><b>Sınıfı yükleyen hiçbir yol yoktur</b> — yalnız {@code getResource} çağrılır.
+     * {@link Class#forName} <b>kullanılmaz</b>, çünkü hedef sınıfı erken tanımlar ve
+     * Mixin {@code MixinTargetAlreadyLoadedException} ile oyunu çökertir.
+     *
+     * <p>Yükleyici parametresi varlığı test edilebilir olsun diye ayrılmıştır:
+     * gerçek yükleyici, yüklemeye çalışılırsa hata fırlatan bir yükleyiciyle
+     * değiştirilerek bu yasağın bozulmadığı kanıtlanır.
+     */
+    static boolean isClassAvailable(String className, ClassLoader loader) {
+        String resource = className.replace('.', '/') + ".class";
+        return loader.getResource(resource) != null;
     }
 
     /** FabricLoader Sodium'u kurulu görüyor mu? Fabric API yoksa sadece sınıf testi geçerli olur. */
