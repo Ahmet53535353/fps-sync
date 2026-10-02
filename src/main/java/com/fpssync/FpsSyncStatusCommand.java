@@ -33,7 +33,7 @@ import java.time.format.DateTimeFormatter;
  */
 public final class FpsSyncStatusCommand {
 
-    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS");
     private static final String DIR = "fps-sync";
 
     private FpsSyncStatusCommand() {
@@ -101,15 +101,39 @@ public final class FpsSyncStatusCommand {
                 0));
     }
 
-    private record Result(Path path, boolean ok) {
+    /** Dosya yazma sonucu: yol (başarılıysa) ve başarı durumu. */
+    public record Result(Path path, boolean ok) {
     }
 
-    private static Result writeToDisk(String report) {
+    /**
+     * Raporu oyun dizinindeki {@code fps-sync/} klasörüne yazar.
+     *
+     * <p>Asıl giriş noktası oyun dizinini bilen {@code run}; test edilebilirlik için
+     * taban dizin ayrıca alınır.
+     */
+    public static Result writeToDisk(String report) {
+        return writeToDisk(report, MinecraftClient.getInstance().runDirectory.toPath());
+    }
+
+    /**
+     * Raporu verilen taban dizin altına yazar; {@code latest.txt} eşzamanlı olarak
+     * güncellenir.
+     *
+     * <p>Başarısızlık fırlatmaz: rapor kaybolsa bile oyun çökmez, çağıran yalnızca
+     * {@code ok == false} görür.
+     */
+    static Result writeToDisk(String report, Path gameDir) {
         try {
-            Path dir = MinecraftClient.getInstance().runDirectory.toPath().resolve(DIR);
+            Path dir = gameDir.resolve(DIR);
             Files.createDirectories(dir);
             String stamp = LocalDateTime.now().format(STAMP);
             Path file = dir.resolve("status-" + stamp + ".txt");
+            // Aynı milisaniyede iki rapor üretilebilir (ör. iki komut birbirine
+            // yakın). İlk dosyanın üzerine yazmamak için ad çakışana kadar numara eklenir;
+            // iki rapor da karşılaştırılabilir kalmalıdır.
+            for (int n = 1; Files.exists(file) && n < 1000; n++) {
+                file = dir.resolve("status-" + stamp + "-" + n + ".txt");
+            }
             Files.writeString(file, report, StandardCharsets.UTF_8);
             Files.writeString(dir.resolve("latest.txt"), report, StandardCharsets.UTF_8);
             return new Result(file, true);
