@@ -96,14 +96,19 @@ public final class FpsSyncStatusCommand {
         int hz = MonitorInfoProvider.getRefreshRate();
         return FpsSyncStatusReport.render(new FpsSyncStatusReport.Snapshot(
                 pacing, sync, hz, w, h,
-                com.fpssync.FpsSyncMod.MOD_VERSION,
+                ModVersion.resolve(),
                 sync || !SodiumPresence.isPresent(),
                 0));
     }
 
-    /** Dosya yazma sonucu: yol (başarılıysa) ve başarı durumu. */
-    public record Result(Path path, boolean ok) {
-    }
+      /**
+       * Dosya yazma sonucu.
+       *
+       * @param path yazılan dosyanın yolu
+       * @param ok yazma başarılıysa {@code true}
+       */
+      public record Result(Path path, boolean ok) {
+      }
 
     /**
      * Raporu oyun dizinindeki {@code fps-sync/} klasörüne yazar.

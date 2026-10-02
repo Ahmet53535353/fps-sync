@@ -7,10 +7,10 @@ import org.slf4j.LoggerFactory;
 
 public class FpsSyncMod implements ClientModInitializer {
 
+    /** Mod kimliği; {@code fabric.mod.json} ile aynı olmalıdır. */
     public static final String MOD_ID = "fps-sync";
 
-    /** Mod sürümü; {@code /fpsync status} raporunda görünür. */
-    public static final String MOD_VERSION = "1.1.0";
+    /** Günlüğe yazılan logger. */
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     /** Tek örnek; oyun ve testler aynı mantığı kullanır. */
