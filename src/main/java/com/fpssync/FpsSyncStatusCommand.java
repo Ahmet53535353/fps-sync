@@ -113,10 +113,13 @@ public final class FpsSyncStatusCommand {
     /**
      * Raporu oyun dizinindeki {@code fps-sync/} klasörüne yazar.
      *
-     * <p>Asıl giriş noktası oyun dizinini bilen {@code run}; test edilebilirlik için
-     * taban dizin ayrıca alınır.
-     */
-    public static Result writeToDisk(String report) {
+       * <p>Asıl giriş noktası oyun dizinini bilen {@code run}; test edilebilirlik için
+       * taban dizin ayrıca alınır.
+       *
+       * @param report yazılacak metin
+       * @return yazma sonucu
+       */
+      public static Result writeToDisk(String report) {
         return writeToDisk(report, MinecraftClient.getInstance().runDirectory.toPath());
     }
 

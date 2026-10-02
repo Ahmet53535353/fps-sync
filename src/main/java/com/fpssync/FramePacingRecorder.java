@@ -27,6 +27,12 @@ package com.fpssync;
  */
 public final class FramePacingRecorder {
 
+    /**
+     * Boş kayıtçı: henüz hiç kare kaydedilmemiş.
+     */
+    public FramePacingRecorder() {
+    }
+
     /** İnce gecikme histogramının üst sınırı: 50 ms. */
     public static final long LATE_FINE_MAX_NS = 50_000_000L;
 
@@ -146,10 +152,20 @@ public final class FramePacingRecorder {
     }
 
     /** Rapor üretimi sırasında ölçümü durdurmak için. */
+    /**
+     * Ölçümü durdurur veya başlatır.
+     *
+     * @param value {@code true} ise yeni kareler kaydedilmez
+     */
     public void setPaused(boolean value) {
         paused = value;
     }
 
+    /**
+     * Ölçümün duraklatılıp duraklatılmadığını söyler.
+     *
+     * @return ölçüm şu anda duraklatılmışsa {@code true}
+     */
     public boolean isPaused() {
         return paused;
     }
@@ -163,12 +179,22 @@ public final class FramePacingRecorder {
     }
 
     /** Geçen süreyi dışarıdan doğrular (testler ve saat kayması düzeltmesi). */
+    /**
+     * Geçen süreyi dışarıdan doğrular (testler ve saat kayması düzeltmesi).
+     *
+     * @param ns ekleneceği bildirilen süre
+     */
     public void advanceElapsedNs(long ns) {
         if (!paused) {
             elapsedNs += ns;
         }
     }
 
+    /**
+     * Ölçüm başlangıcından beri geçen süre.
+     *
+     * @return nanosaniye cinsinden geçen süre
+     */
     public long elapsedNs() {
         return elapsedNs;
     }
@@ -178,12 +204,18 @@ public final class FramePacingRecorder {
      *
      * <p>Anlık FPS'lerin ortalaması <b>kullanılmaz</b>: hızlı kareler ortalamada daha
      * çok ağırlık kazanır ve kimsenin yaşamadığı bir sayı verir.
+     *
+     * @return ölçülen gerçek FPS; henüz süre geçmediyse 0
      */
     public double actualFps() {
         return elapsedNs <= 0 ? 0.0 : (active.frames + idle.frames) * 1_000_000_000.0 / elapsedNs;
     }
 
-    /** Sınırlayıcının ilk kez beklediği ana kadarki geçen süre; hiç beklemediyse −1. */
+    /**
+     * Sınırlayıcının ilk kez beklediği ana kadarki geçen süre.
+     *
+     * @return geçen süre; hiç beklemediyse −1
+     */
     public long firstWaitAtNs() {
         return firstWaitAtNs;
     }
@@ -209,81 +241,160 @@ public final class FramePacingRecorder {
 
     // --- bekleyen (sınırlayıcı aktif) rejim ---
 
+    /**
+     * Sınırlayıcı beklerken geçen kare sayısı.
+     * @return sınırlayıcı beklerken geçen kare sayısı
+     */
     public long activeFrames() {
         return active.frames;
     }
 
+    /**
+     * Sınırlayıcı beklerken hedefi aşan kare sayısı.
+     * @return sınırlayıcı beklerken hedefi aşan kare sayısı
+     */
     public long activeLateFrames() {
         return active.lateFrames;
     }
 
+    /**
+     * Sınırlayıcı beklerken ölçülen en büyük gecikme.
+     * @return sınırlayıcı beklerken ölçülen en büyük gecikme, nanosaniye
+     */
     public long activeLatenessMaxNs() {
         return active.latenessMaxNs;
     }
 
+    /**
+     * Gecikme histogramının taştığı kare sayısı (üst sınır 50 ms).
+     * @return gecikme histogramının taştığı kare sayısı (üst sınır 50 ms)
+     */
     public long activeLatenessOverflowFrames() {
         return active.latenessOverflowFrames;
     }
 
+    /**
+     * Sınırlayıcı beklerken gecikme medyanı.
+     * @return sınırlayıcı beklerken gecikme medyanı, nanosaniye
+     */
     public long activeLatenessMedianNs() {
         return percentile(active.lateness, active.lateFrames, LATE_FINE_STEP_NS, 0.50);
     }
 
+    /**
+     * Sınırlayıcı beklerken gecikmenin istenen yüzdeliği.
+     * @param q istenen yüzdelik, 0–1 arası
+     * @return gecikmenin istenen yüzdeliği, nanosaniye
+     */
     public long activeLatenessPercentileNs(double q) {
         return percentile(active.lateness, active.lateFrames, LATE_FINE_STEP_NS, q);
     }
 
+    /**
+     * Sınırlayıcı beklerken park çağrısı sayısı.
+     * @return sınırlayıcı beklerken park çağrısı sayısı
+     */
     public long activeParkCalls() {
         return active.parkCalls;
     }
 
+    /**
+     * Park için istenen sürenin toplamı.
+     * @return park için istenen sürenin toplamı, nanosaniye
+     */
     public long activeParkNsTotal() {
         return active.parkNsTotal;
     }
 
+    /**
+     * Park'ın en büyük aşımı.
+     * @return park'ın en büyük aşımı, nanosaniye
+     */
     public long activeOvershootMaxNs() {
         return active.overshootMaxNs;
     }
 
+    /**
+     * Park aşımının medyanı.
+     *
+     * @return nanosaniye cinsinden medyan aşım
+     */
     public long activeOvershootMedianNs() {
         return percentile(active.overshoot, active.parkCalls, OVERSHOOT_STEP_NS, 0.50);
     }
 
+    /**
+     * Park aşımının istenen yüzdeliği.
+     * @param q istenen yüzdelik, 0–1 arası
+     * @return park aşımının istenen yüzdeliği, nanosaniye
+     */
     public long activeOvershootPercentileNs(double q) {
         return percentile(active.overshoot, active.parkCalls, OVERSHOOT_STEP_NS, q);
     }
 
+    /**
+     * Spin'de harcanan toplam süre.
+     * @return spin'de harcanan toplam süre, nanosaniye
+     */
     public long activeSpinNsTotal() {
         return active.spinNsTotal;
     }
 
+    /**
+     * Spin döngüsüne girilen kere sayısı.
+     * @return spin döngüsüne girilen kere sayısı
+     */
     public long activeSpinEntries() {
         return active.spinEntries;
     }
 
     // --- boşta (sınırlayıcı beklememiş) rejim ---
 
+    /**
+     * Sınırlayıcı beklemediği kare sayısı.
+     * @return sınırlayıcı beklemediği kare sayısı
+     */
     public long idleFrames() {
         return idle.frames;
     }
 
+    /**
+     * Sınırlayıcı beklemediği hâlde hedefi aşan kare sayısı.
+     * @return sınırlayıcı beklemediği hâlde hedefi aşan kare sayısı
+     */
     public long idleLateFrames() {
         return idle.lateFrames;
     }
 
+    /**
+     * Sınırlayıcı beklemediği hâlde ölçülen en büyük gecikme.
+     * @return sınırlayıcı beklemediği hâlde ölçülen en büyük gecikme, nanosaniye
+     */
     public long idleLatenessMaxNs() {
         return idle.latenessMaxNs;
     }
 
+    /**
+     * Sınırlayıcı beklemediği hâlde yapılan park çağrısı sayısı.
+     * @return sınırlayıcı beklemediği hâlde yapılan park çağrısı sayısı
+     */
     public long idleParkCalls() {
         return idle.parkCalls;
     }
 
+    /**
+     * Sınırlayıcı beklemediği hâlde spin'de harcanan süre.
+     * @return sınırlayıcı beklemediği hâlde spin'de harcanan süre, nanosaniye
+     */
     public long idleSpinNsTotal() {
         return idle.spinNsTotal;
     }
 
-    /** Boşta rejimde geçen süre — başlangıç aşamasının uzunluğunu verir. */
+    /**
+     * Boşta rejimde geçen süre — başlangıç aşamasının uzunluğunu verir.
+     *
+     * @return nanosaniye cinsinden boşta süre
+     */
     public long idleElapsedNs() {
         return idle.totalFrameNs;
     }

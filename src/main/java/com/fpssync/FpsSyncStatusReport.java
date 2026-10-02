@@ -17,10 +17,10 @@ public final class FpsSyncStatusReport {
     private FpsSyncStatusReport() {
     }
 
-    /**
-     * Raporun okunması gereken tek veri kaynağı.
-     *
-     * @param pacing       ölçüm
+      /**
+       * Raporun tek kare anındaki girdisi. Saf veri: biçimlendirme burada olmaz.
+       *
+     * @param pacing       ölçüm kayıtçısı
      * @param syncEnabled  FPS Sync açık mı
      * @param monitorHz    algılanan monitör yenileme hızı
      * @param windowW      pencere genişliği
@@ -34,6 +34,12 @@ public final class FpsSyncStatusReport {
                            boolean sodiumSlider, int lastExitCode) {
     }
 
+    /**
+     * Raporu okunabilir metne çevirir.
+     *
+     * @param s anlık girdi
+     * @return çok satırlı rapor metni
+     */
     public static String render(Snapshot s) {
         FramePacingRecorder r = s.pacing();
         long active = r.activeFrames();
