@@ -165,6 +165,48 @@ public class FrameLimiter {
     LongConsumer onSpin = spin -> { };
     Runnable spinHook = NO_SPIN_HOOK;
 
+    // --- /fpsync status sayaçları -------------------------------------------------
+    // Yalnız kare içinde gerçekten beklendiğinde artar; beklemeyen karelerde bu
+    // alanlara hiç dokunulmaz. Böylece "limiter boşta" rejiminin ölçüm maliyeti
+    // sıfıra yakın kalır. Değerler her kare sonunda {@link #resetFrameStats()} ile
+    // tüketilir.
+    /** Bu karede sınırlayıcı gerçekten bekledi mi (1/0). */
+    int waitedLastFrame;
+    /** Bu karedeki park çağrısı sayısı. */
+    int parkCallsLastFrame;
+    /** Bu karede park için istenen süre toplamı. */
+    long parkRequestedNsLastFrame;
+    /** Bu karede park'ın ortalama aşımı. */
+    long parkOvershootNsLastFrame;
+    /** Bu karede harcanan spin süresi. */
+    long spinNsLastFrame;
+    /** Beklemeden önceki kare için hedef bütçe; 0 ise sınırlayıcı kapalıydı. */
+    long frameBudgetNsLastFrame;
+    /**
+     * Bu karede okunan {@code nanoTime}.
+     *
+     * <p>Ölçüm kancası bunu <b>kare süresi</b> olarak kullanır; böylece sıcak yola
+     * ek bir {@code System.nanoTime()} çağrısı girmesine gerek kalmaz. Sınırlayıcı
+     * kapalıyken okunmaz ve 0 kalır — o durumda kare zamanlaması ölçülmez, çünkü
+     * sınırlayıcının yapacağı bir şey yoktur.
+     */
+    long nanoTimeLastFrame;
+
+    /**
+     * Kare sayaclarını sifirlar.
+     *
+     * <p>Ölçüm kancası her karede bir kez çağırır. Maliyeti altı alan yazımıdır.
+     */
+    void resetFrameStats() {
+        waitedLastFrame = 0;
+        parkCallsLastFrame = 0;
+        parkRequestedNsLastFrame = 0;
+        parkOvershootNsLastFrame = 0;
+        spinNsLastFrame = 0;
+        frameBudgetNsLastFrame = 0;
+        nanoTimeLastFrame = 0;
+    }
+
     /**
      * Dikişleri üretim değerlerine döndürür.
      *
@@ -190,6 +232,11 @@ public class FrameLimiter {
     public void setManualLimit(int fps) {
         manualFpsLimit = fps;
         lastFrameTime = 0;
+    }
+
+    /** FPS Sync modu açık mı — {@code /fpsync status} bunu raporlar. */
+    public boolean isSyncEnabled() {
+        return fpsSyncEnabled;
     }
 
     public void setMonitorRefreshRate(int hz) {
@@ -219,7 +266,9 @@ public class FrameLimiter {
         if (targetFps <= 0) return;
 
         long frameBudgetNs = 1_000_000_000L / targetFps;
+        frameBudgetNsLastFrame = frameBudgetNs;
         long now = nanoTime.getAsLong();
+        nanoTimeLastFrame = now;
 
         if (lastFrameTime == 0) { lastFrameTime = now; return; }
 
@@ -230,8 +279,13 @@ public class FrameLimiter {
         long remaining = nextFrameTime - now;
 
         // Büyük kısımı uyu; yalnızca son 0.1 ms'yi spin ile tamamla.
+        // Buraya gelmek demek sınırlayıcının bu karede gerçekten beklediğidir.
+        waitedLastFrame = 1;
+
         long sleepNs = remaining - SPIN_WINDOW_NS;
         if (sleepNs > 0) {
+            parkCallsLastFrame = 1;
+            parkRequestedNsLastFrame += sleepNs;
             try {
                 // Nanosaniye değeri doğrudan korunur. Thread.sleep(ms) kullanılsaydı
                 // kırpma 0.1 ms'lik spin penceresini yutardı: kalan süre 1.1 ms'nin
@@ -244,7 +298,13 @@ public class FrameLimiter {
             }
         }
 
+        // `spinStart` park'tan hemen sonra okunduğu için park aşımı ek bir
+        // nanoTime çağrısı olmadan hesaplanır: uyanma anı zaten elimizde.
         long spinStart = nanoTime.getAsLong();
+        if (sleepNs > 0) {
+            long actual = spinStart - now - sleepNs;
+            parkOvershootNsLastFrame = actual > 0 ? actual : 0;
+        }
         Runnable hook = spinHook;
         if (hook == NO_SPIN_HOOK) {
             while (nanoTime.getAsLong() < nextFrameTime) {
@@ -257,7 +317,8 @@ public class FrameLimiter {
                 hook.run();
             }
         }
-        onSpin.accept(nanoTime.getAsLong() - spinStart);
+        spinNsLastFrame = nanoTime.getAsLong() - spinStart;
+        onSpin.accept(spinNsLastFrame);
 
         lastFrameTime = nextFrameTime;
     }

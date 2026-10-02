@@ -8,10 +8,19 @@ import org.slf4j.LoggerFactory;
 public class FpsSyncMod implements ClientModInitializer {
 
     public static final String MOD_ID = "fps-sync";
+
+    /** Mod sürümü; {@code /fpsync status} raporunda görünür. */
+    public static final String MOD_VERSION = "1.1.0";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     /** Tek örnek; oyun ve testler aynı mantığı kullanır. */
     public static final FrameLimiter LIMITER = FrameLimiter.INSTANCE;
+
+    /** Kare zamanlaması ölçümü. Oyun başlarken bir kez ayrılır. */
+    private static final FramePacingRecorder PACING = new FramePacingRecorder();
+
+    /** Kare süresi farkı için taban zaman. */
+    private static long lastFrameNsBase;
 
     /**
      * {@code SodiumFpsLimitMixin} hedefe başarıyla uygulandı mı?
@@ -45,8 +54,48 @@ public class FpsSyncMod implements ClientModInitializer {
         sliderInjected = true;
     }
 
+    /**
+     * Ölçüm kaydı.
+     *
+     * @return oyun başlangıcından beri biriken kare zamanlaması kaydı
+     */
+    public static FramePacingRecorder pacing() {
+        return PACING;
+    }
+
+    /**
+     * Kare sonunda çağrılır; sınırlayıcının bu kareye ait sayaclarını toplar.
+     *
+     * <p>Sıcak yolda çalışır ve <b>sıfır ayak izi</b> bırakır (bkz.
+     * {@code FramePacingZeroAllocationTest}). Kare süresi için ek {@code nanoTime}
+     * çağrısı yapılmaz: sınırlayıcı zaten bir tane okumuş, onun farkı kullanılır.
+     *
+     * <p>Sınırlayıcı <b>kapalı</b>ysa hiçbir şey kaydedilmez — o durumda ölçülecek bir
+     * zamanlama yoktur.
+     */
+    public static void recordFrameTiming() {
+        FrameLimiter limiter = LIMITER;
+        long now = limiter.nanoTimeLastFrame;
+        long budget = limiter.frameBudgetNsLastFrame;
+
+        if (budget > 0 && now > 0) {
+            if (lastFrameNsBase > 0) {
+                long frameNs = now - lastFrameNsBase;
+                if (frameNs > 0) {
+                    PACING.recordFrame(frameNs, budget, limiter.waitedLastFrame == 1,
+                            limiter.parkCallsLastFrame, limiter.parkRequestedNsLastFrame,
+                            limiter.parkOvershootNsLastFrame, limiter.spinNsLastFrame);
+                }
+            }
+            lastFrameNsBase = now;
+        }
+        limiter.resetFrameStats();
+    }
+
     @Override
     public void onInitializeClient() {
+        FpsSyncStatusCommand.register();
+
         ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
             int value = client.options.getMaxFps().getValue();
             if (FpsSyncOption.isSync(value)) {

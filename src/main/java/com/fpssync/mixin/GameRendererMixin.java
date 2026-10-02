@@ -23,5 +23,6 @@ public class GameRendererMixin {
         MonitorInfoProvider.updateDisplayInfo();
         FpsSyncMod.LIMITER.setMonitorRefreshRate(MonitorInfoProvider.getRefreshRate());
         FpsSyncMod.LIMITER.limitFrame();
+        FpsSyncMod.recordFrameTiming();
     }
 }
