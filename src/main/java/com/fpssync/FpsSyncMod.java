@@ -14,23 +14,33 @@ public class FpsSyncMod implements ClientModInitializer {
     public static final FrameLimiter LIMITER = FrameLimiter.INSTANCE;
 
     /**
-     * FPS Sync kaydırıcısının Sodium ayarlar ekranına başarıyla eklenip eklenmediği.
+     * {@code SodiumFpsLimitMixin} hedefe başarıyla uygulandı mı?
      *
-     * <p>Sodium'un dahili config API'si sürümler arasında sık değişir ve FPS-Sync bu
-     * API'ya doğrudan karışır. Bir gün hedef bulunamazsa injector sessizce devre dışı
-     * kalır ({@code require = 0}) ve oyun çökmez; ama kullanıcı kaydırıcının neden
-     * kaybolduğunu anlamaz. Bu bayrak, o durumda açık bir uyarı basılmasını sağlar.
+     * <p><b>Bu bayrak "slider'ın eklenip eklenmediğini" değil, "karıştırmanın
+     * uygulanıp uygulanmadığını" tutar.</b> İkisi farklı zamanlarda olur ve karıştırma
+     * zamanında ölçülen budur — bkz. {@link SodiumSliderStatus}.
      *
-     * <p><b>Bu bayrak tek başına anlam taşımaz</b> — Sodium kurulu değilse de
-     * {@code false} kalır. İkisini ayırmak için {@link #sodiumPresent} ayrı tutulur;
-     * aksi hâlde Sodium'suz kurulumda "Sodium'un config API'si beklenenden farklı"
-     * denilen bir uyarı basılır ve kullanıcı modu hatalı sanar.
+     * <p>Neden ayrı tutulduğu: 2026-10-02'de {@code @Inject} metodunun
+     * tetiklendiği "slider eklendi" bayrağı okunuyordu. Oysa Sodium config'ini
+     * {@code MinecraftClient.onInitFinished} sonunda kurar; uyarı ise
+     * {@code CLIENT_STARTED}'da basılıyor. Arada 7 saniye vardı ve bayrak o an
+     * {@code false} olduğu için oyun, slider görünmesine rağmen <em>her açılışta</em>
+     * "kaydırıcı eklenemedi" uyarısı bastı. Gerçek oyunda doğrulandı: mixin temiz
+     * uygulandı, hiç injector hatası yok, slider ayarlarda duruyor — yine uyarı
+     * basılıyordu.
+     *
+     * <p>Doğru ölçüt, karıştırmanın {@code postApply} ile uygulanmış olmasıdır:
+     * uygulandıysa slider, kullanıcı Sodium ayarlarını açtığında kesinlikle oradadır.
      */
     private static volatile boolean sliderInjected = false;
 
     /** Sodium kurulu mu. Kurulu değilse slider uyarısı anlamsızdır. */
     private static final boolean SODIUM_PRESENT = SodiumPresence.isPresent();
 
+    /**
+     * {@code SodiumPresenceMixinPlugin.postApply} çağrısında tetiklenir:
+     * karıştırma {@code SodiumConfigBuilder}'a başarıyla uygulandı.
+     */
     public static void markSliderInjected() {
         sliderInjected = true;
     }
@@ -45,11 +55,7 @@ public class FpsSyncMod implements ClientModInitializer {
                 if (client.getWindow() != null) {
                     client.getWindow().setFramerateLimit(FpsSyncOption.toWindowLimit(value));
                 }
-                if (!sliderInjected && SODIUM_PRESENT) {
-                    warnSliderMissing();
-                } else if (!sliderInjected) {
-                    infoSodiumAbsent();
-                }
+                reportSliderStatus();
                 return;
             }
             LIMITER.setEnabled(false);
@@ -58,6 +64,23 @@ public class FpsSyncMod implements ClientModInitializer {
                 client.getWindow().setFramerateLimit(FpsSyncOption.toWindowLimit(value));
             }
         });
+    }
+
+    /**
+     * Slider durumunu değerlendirip gerekiyorsa mesaj basar.
+     *
+     * <p>Kararın kendisi saf ve testlidir: {@link SodiumSliderStatus#decide}. Burada
+     * yalnızca mesajın <em>ne zaman</em> basılacağı belirlenir.
+     */
+    private static void reportSliderStatus() {
+        SodiumSliderStatus status = SodiumSliderStatus.decide(SODIUM_PRESENT, sliderInjected);
+        if (status.isSodiumAbsent()) {
+            infoSodiumAbsent();
+        } else if (status.isFailure()) {
+            warnSliderMissing();
+        }
+        // MIXIN_APPLIED: slider kullanıcı Sodium ayarlarını açtığında görünecek; sessiz geçilir.
+        // 2026-10-02'den önce bu durumda yanlış uyarı basılıyordu.
     }
 
     private static void warnSliderMissing() {

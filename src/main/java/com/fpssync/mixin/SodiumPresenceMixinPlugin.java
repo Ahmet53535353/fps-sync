@@ -1,5 +1,6 @@
 package com.fpssync.mixin;
 
+import com.fpssync.FpsSyncMod;
 import com.fpssync.SodiumPresence;
 import java.util.List;
 import java.util.Set;
@@ -57,6 +58,32 @@ public class SodiumPresenceMixinPlugin implements IMixinConfigPlugin {
         return sodiumPresent;
     }
 
+    /**
+     * Karıştırma hedefe <b>başarıyla uygulandığında</b> çağrılır.
+     *
+     * <p>FPS Sync'in slider'ı buradan bildirilir. Doğru ölçüt budur, çünkü kullanıcı
+     * "slider görünüyor mu" diye sormaz; slider, Sodium ayarlarını açtığında orada
+     * olacaktır.
+     *
+     * <p><b>Neden {@code buildGeneralPage} bildirimi değil?</b> 2026-10-02'de bildirim
+     * o metodun başındaki bir {@code @Inject} ile yapılıyordu. Oysa Sodium config'ini
+     * {@code MinecraftClient.onInitFinished} sonunda kurar; oyun ise uyarıyı
+     * {@code CLIENT_STARTED}'da sorar. Log kanıtı: karıştırma 18:57:12'de uygulandı,
+     * uyarı 18:57:19'da basıldı — yani metot henüz çalışmamıştı. Oyun, slider
+     * görünmesine rağmen <em>her açılışta</em> "kaydırıcı eklenemedi" uyarısı bastı.
+     *
+     * <p>{@code postApply} ise karıştırma <b>sınıf yüklenirken</b>, yani kontrolden
+     * önce çalışır. Bu yüzden zamanlama doğru olur.
+     *
+     * <p>Bu eklenti yalnız {@code fps-sync.sodium.mixins.json}'da kullanıldığı için
+     * {@code postApply} yalnız {@code SodiumFpsLimitMixin} için çağrılır.
+     */
+    @Override
+    public void postApply(String targetClassName, ClassNode targetClass,
+            String mixinClassName, IMixinInfo mixinInfo) {
+        FpsSyncMod.markSliderInjected();
+    }
+
     // --- aşağıdakiler varsayılan davranış; karışmamaları için açıkça yazıldı ---
 
     @Override
@@ -80,9 +107,4 @@ public class SodiumPresenceMixinPlugin implements IMixinConfigPlugin {
         // Uygulama öncesi değişiklik yok.
     }
 
-    @Override
-    public void postApply(String targetClassName, ClassNode targetClass,
-            String mixinClassName, IMixinInfo mixinInfo) {
-        // Uygulama sonrası değişiklik yok.
-    }
 }
