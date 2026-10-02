@@ -9,7 +9,8 @@ import java.util.function.LongSupplier;
  *
  * <p>İki çalışma modu vardır. FPS Sync açıkken hedef, monitörün gerçek yenileme
  * hızıdır ve elle sınır yok sayılır. kapalıyken elle seçilen değer geçerlidir
- * ({@code 0} veya {@code >= 1010} sınırsız demektir).
+ * ({@link FpsSyncOption#UNLIMITED} ve üstü sınırsız demektir; bkz.
+ * {@link FpsSyncOption}).
  *
  * <p><b>Bekleme biçimi.</b> Bekleme {@link LockSupport#parkNanos} ile yapılır, nanosaniye
  * değeri olduğu gibi korunur. Daha önce şu iki satır vardı:
@@ -209,10 +210,10 @@ public class FrameLimiter {
 
         if (fpsSyncEnabled) {
             targetFps = monitorRefreshRate;
-        } else if (manualFpsLimit > 0 && manualFpsLimit < 1010) {
+        } else if (FpsSyncOption.isManual(manualFpsLimit)) {
             targetFps = manualFpsLimit;
         } else {
-            return; // Unlimited (manualFpsLimit == 0 or >= 1010)
+            return; // sınırsız (0 ya da FpsSyncOption.UNLIMITED ve üstü)
         }
 
         if (targetFps <= 0) return;

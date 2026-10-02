@@ -1,6 +1,7 @@
 package com.fpssync.mixin;
 
 import com.fpssync.FpsSyncMod;
+import com.fpssync.FpsSyncOption;
 import net.caffeinemc.mods.sodium.api.config.option.ControlValueFormatter;
 import net.caffeinemc.mods.sodium.api.config.structure.ConfigBuilder;
 import net.caffeinemc.mods.sodium.api.config.structure.IntegerOptionBuilder;
@@ -52,7 +53,7 @@ public abstract class SodiumFpsLimitMixin {
 			require = 0)
 	public IntegerOptionBuilder redirectFpsSliderRange(
 			IntegerOptionBuilder builder, int min, int max, int step) {
-		return builder.setRange(-10, 1010, 10);
+		return builder.setRange(FpsSyncOption.CODEC_MIN, FpsSyncOption.CODEC_MAX, FpsSyncOption.STEP);
 	}
 
 	@Redirect(method = "buildGeneralPage", remap = false,
@@ -63,10 +64,10 @@ public abstract class SodiumFpsLimitMixin {
 	public IntegerOptionBuilder redirectFpsValueFormatter(
 			IntegerOptionBuilder builder, ControlValueFormatter original) {
 		return builder.setValueFormatter(value -> {
-			if (value <= 0) {
+			if (FpsSyncOption.isSync(value)) {
 				return Text.literal("FPS Sync");
 			}
-			if (value >= 1010) {
+			if (FpsSyncOption.isUnlimited(value)) {
 				return Text.translatable("options.framerateLimit.max");
 			}
 			return Text.translatable("options.framerate", value);

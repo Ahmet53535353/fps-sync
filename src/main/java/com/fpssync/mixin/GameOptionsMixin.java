@@ -1,6 +1,7 @@
 package com.fpssync.mixin;
 
 import com.fpssync.FpsSyncMod;
+import com.fpssync.FpsSyncOption;
 import com.mojang.serialization.Codec;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.GameOptions;
@@ -25,42 +26,33 @@ public class GameOptionsMixin {
                 "options.framerateLimit",
                 SimpleOption.emptyTooltip(),
                 (optionText, value) -> {
-                    if (value <= 0) {return Text.literal("FPS Sync");}
-                    if (value >= 1010) {return Text.translatable("options.framerateLimit.max");}
+                    if (FpsSyncOption.isSync(value)) {return Text.literal("FPS Sync");}
+                    if (FpsSyncOption.isUnlimited(value)) {return Text.translatable("options.framerateLimit.max");}
                     return Text.translatable("options.framerate", value);
                 },
-                new SimpleOption.ValidatingIntSliderCallbacks(0, 101).withModifier(
-                        sliderPos -> {
-                            if (sliderPos == 0) {return -10;}
-                            if (sliderPos >= 101) {return 1010;}
-                            return sliderPos * 10;
-                        },
-                        value -> {
-                            if (value <= 0) {return 0;}
-                            if (value >= 1010) {return 101;}
-                            return Math.min(value / 10, 100);
-                        }
-                ),
-                Codec.intRange(-10, 1010),
-                120,
+                new SimpleOption.ValidatingIntSliderCallbacks(
+                        FpsSyncOption.SLIDER_MIN, FpsSyncOption.SLIDER_MAX)
+                        .withModifier(FpsSyncOption::sliderToValue, FpsSyncOption::valueToSlider),
+                Codec.intRange(FpsSyncOption.CODEC_MIN, FpsSyncOption.CODEC_MAX),
+                FpsSyncOption.DEFAULT_FPS,
                 value -> {
                     MinecraftClient client = MinecraftClient.getInstance();
-                    if (value <= 0) {
+                    if (FpsSyncOption.isSync(value)) {
                         FpsSyncMod.LIMITER.setEnabled(true);
                         FpsSyncMod.LIMITER.setManualLimit(0);
 
                         if (client != null && client.getWindow() != null) {
-                            client.getWindow().setFramerateLimit(Integer.MAX_VALUE);
+                            client.getWindow().setFramerateLimit(FpsSyncOption.toWindowLimit(value));
                         }
 
                         return;
                     }
 
                     FpsSyncMod.LIMITER.setEnabled(false);
-                    FpsSyncMod.LIMITER.setManualLimit(value >= 1010 ? 0 : value);
+                    FpsSyncMod.LIMITER.setManualLimit(FpsSyncOption.manualLimitOrZero(value));
 
                     if (client != null && client.getWindow() != null) {
-                        client.getWindow().setFramerateLimit(value >= 1010 ? Integer.MAX_VALUE : value);
+                        client.getWindow().setFramerateLimit(FpsSyncOption.toWindowLimit(value));
                     }
                 }
         );
