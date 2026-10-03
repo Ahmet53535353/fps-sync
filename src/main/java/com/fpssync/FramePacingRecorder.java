@@ -78,6 +78,16 @@ public final class FramePacingRecorder {
     public static final long PARK_ELAPSED_STEP_NS = 10_000L;
 
     static final int OVERSHOOT_BUCKETS = (int) (OVERSHOOT_MAX_NS / OVERSHOOT_STEP_NS) + 1;
+    /**
+     * Karşılaştırma penceresi: ilk 10 dakika.
+     *
+     * <p>Sabit süreli bir pencere, koşular arasındaki farkı ölçülebilir kılar. Toplamlar
+     * karşılaştırılamaz: üç ardışık koşuda CPU payı %17,0 → %17,5 → %25,1 çıktı ve kod
+     * değişmedi; değişen şey oynanan içerikti (gezinme, maden). İlk 10 dakika aynı
+     * koşulu ölçer: dünya yüklenmiş, ısınma tamam, oyuncu benzer yerde.
+     */
+    public static final long EARLY_WINDOW_NS = 600_000_000_000L;
+
     static final int PARK_ELAPSED_BUCKETS =
             (int) (PARK_ELAPSED_MAX_NS / PARK_ELAPSED_STEP_NS) + 1;
 
@@ -102,6 +112,36 @@ public final class FramePacingRecorder {
         final int[] lateness = new int[LATE_BUCKETS];
         final int[] overshoot = new int[OVERSHOOT_BUCKETS];
         final int[] parkElapsed = new int[PARK_ELAPSED_BUCKETS];
+
+        /**
+         * Başka bir rejimin değerlerini alır.
+         *
+         * <p>İlk 10 dakika penceresini dondururken kullanılır: pencere, sınır anındaki
+         * sayaçların <em>kopyasıdır</em> ve bundan sonra değişmez. Tahsis yapmaz —
+         * diziler zaten var, yalnız içerik kopyalanır.
+         *
+         * @param other kopyalanacak rejim
+         */
+        void copyFrom(Regime other) {
+            frames = other.frames;
+            lateFrames = other.lateFrames;
+            totalFrameNs = other.totalFrameNs;
+            latenessOverflowFrames = other.latenessOverflowFrames;
+            latenessMaxNs = other.latenessMaxNs;
+            parkCalls = other.parkCalls;
+            parkNsTotal = other.parkNsTotal;
+            overshootOverflow = other.overshootOverflow;
+            overshootMaxNs = other.overshootMaxNs;
+            parkEarlyCalls = other.parkEarlyCalls;
+            parkEarlyNsTotal = other.parkEarlyNsTotal;
+            parkElapsedCalls = other.parkElapsedCalls;
+            parkElapsedOverflow = other.parkElapsedOverflow;
+            spinNsTotal = other.spinNsTotal;
+            spinEntries = other.spinEntries;
+            System.arraycopy(other.lateness, 0, lateness, 0, LATE_BUCKETS);
+            System.arraycopy(other.overshoot, 0, overshoot, 0, OVERSHOOT_BUCKETS);
+            System.arraycopy(other.parkElapsed, 0, parkElapsed, 0, PARK_ELAPSED_BUCKETS);
+        }
 
         void clear() {
             frames = 0;
@@ -128,6 +168,17 @@ public final class FramePacingRecorder {
 
     private final Regime active = new Regime();
     private final Regime idle = new Regime();
+
+    /**
+     * İlk 10 dakikanın dondurulmuş kopyası.
+     *
+     * <p>Kurucuda tahsis edilir; sınırda yalnızca kopyalanır. Böylece sıcak yolda
+     * tahsis olmaz ve sıfır ayak izi testi bozulmaz.
+     */
+    private final Regime earlyActive = new Regime();
+    private final Regime earlyIdle = new Regime();
+    private long earlyElapsedNs;
+    private boolean earlyCaptured;
 
     private long elapsedNs;
     private long firstWaitAtNs = -1;
@@ -230,6 +281,88 @@ public final class FramePacingRecorder {
             r.spinNsTotal += spinNs;
             r.spinEntries++;
         }
+
+        // İlk 10 dakika dolduğunda sayaçların kopyası dondurulur. Buradan sonra
+        // gelen kareler pencereyi değiştirmez. Sınır tek sefer geçilir.
+        if (!earlyCaptured && elapsedNs >= EARLY_WINDOW_NS) {
+            earlyActive.copyFrom(active);
+            earlyIdle.copyFrom(idle);
+            earlyElapsedNs = elapsedNs;
+            earlyCaptured = true;
+        }
+    }
+
+    /**
+     * Bir ölçüm penceresinin toplamları.
+     *
+     * <p>Hem tüm oyun hem ilk 10 dakika için aynı biçimdedir; rapor tek bir kod yoluyla
+     * ikisini de çizer, böylece karşılaştırma aynı ölçütlerle yapılır.
+     *
+     * @param elapsedNs      pencerede geçen süre
+     * @param waitingFrames  sınırlayıcı beklerken geçen kare
+     * @param idleFrames     sınırlayıcı beklemediği kare
+     * @param lateFrames     hedefi aşan kare
+     * @param spinNsTotal    pencerede spin ile geçen süre
+     * @param spinEntries    spin yapılan kare sayısı
+     * @param parkCalls      park çağrısı sayısı
+     * @param parkNsTotal    park için istenen süre toplamı
+     * @param parkEarlyCalls istenenden erken dönen park çağrısı
+     * @param parkEarlyNsTotal erken dönüşlerin toplam büyüklüğü
+     */
+    public record Totals(long elapsedNs, long waitingFrames, long idleFrames,
+            long lateFrames, long spinNsTotal, long spinEntries, long parkCalls,
+            long parkNsTotal, long parkEarlyCalls, long parkEarlyNsTotal) {
+
+/**
+           * Penceredeki toplam kare: bekleyen ve boşta geçenler.
+           *
+           * @return kare sayısı
+           */
+          public long totalFrames() {
+            return waitingFrames + idleFrames;
+        }
+
+        /**
+         * Gerçek FPS: kare ÷ geçen süre.
+         *
+         * @return kare/saniye; süre sıfırsa 0
+         */
+        public double fps() {
+            return elapsedNs <= 0 ? 0.0 : totalFrames() * 1_000_000_000.0 / elapsedNs;
+        }
+    }
+
+    /**
+     * Tüm oyunun toplamları.
+     *
+     * @return oturum başından beri biriken toplamlar
+     */
+    public Totals totals() {
+        return totalsOf(active, idle, elapsedNs);
+    }
+
+    /**
+     * İlk {@value #EARLY_WINDOW_NS} nanosaniyenin toplamları.
+     *
+     * @return dondurulmuş pencere; oturum 10 dakikadan kısaysa {@code null}
+     */
+    public Totals earlyWindowTotals() {
+        return earlyCaptured ? totalsOf(earlyActive, earlyIdle, earlyElapsedNs) : null;
+    }
+
+    /**
+     * İlk 10 dakika doldu mu?
+     *
+     * @return pencere dondurulduysa {@code true}
+     */
+    public boolean earlyWindowCaptured() {
+        return earlyCaptured;
+    }
+
+    private static Totals totalsOf(Regime a, Regime i, long elapsed) {
+        return new Totals(elapsed, a.frames, i.frames, a.lateFrames,
+                a.spinNsTotal, a.spinEntries, a.parkCalls, a.parkNsTotal,
+                a.parkEarlyCalls, a.parkEarlyNsTotal);
     }
 
     /** Rapor üretimi sırasında ölçümü durdurmak için. */
@@ -251,10 +384,14 @@ public final class FramePacingRecorder {
         return paused;
     }
 
-    /** Ölçüm başlangıcını temizler. Geçmiş histogramlar da silinir. */
+    /** Ölçüm başlangıcını temizler. Geçmiş histogramlar ve ilk pencere de silinir. */
     public void reset() {
         active.clear();
         idle.clear();
+        earlyActive.clear();
+        earlyIdle.clear();
+        earlyElapsedNs = 0;
+        earlyCaptured = false;
         elapsedNs = 0;
         firstWaitAtNs = -1;
     }

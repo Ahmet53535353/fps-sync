@@ -14,6 +14,19 @@ import java.util.Locale;
  */
 public final class FpsSyncStatusReport {
 
+    /**
+     * Bir park çağrısının CPU maliyeti için kabaca tahmin: <b>45 µs</b>.
+     *
+     * <p>Kaynak: {@code FrameLimiterCpuProbe} (çevrimdışı), 1 ms'de 24 µs, 5 ms'de
+     * 45 µs, 15 ms'de 51 µs, 50 ms'de 53 µs. Süreye büyük ölçüde bağlı değil; sabit
+     * bir gider.
+     *
+     * <p><b>Bu ölçülmüş bir oyun içi değerdir, değildir.</b> Raporda "tahmin" diye
+     * yazılır. Park'ın CPU'su çekirdekte geçer ve yalnız boş bir JVM'de ölçülebilir;
+     * oynanışta ölçülemez.
+     */
+    private static final long PARK_CPU_ESTIMATE_NS = 45_000L;
+
     private FpsSyncStatusReport() {
     }
 
@@ -110,15 +123,109 @@ public final class FpsSyncStatusReport {
             b.append("  not: oyun hedefe ulaşmadığı için sınırlayıcı hiç beklemedi.\n");
         }
 
-        b.append("\nÖZET\n");
-        b.append("  gerçek FPS        ").append(num(r.actualFps(), 1))
-                .append("  (kare ÷ geçen süre)\n");
-        b.append("  limiter devrede   ").append(percent(100.0 * active / total)).append('\n');
-        b.append("  ilk bekleme       ").append(r.firstWaitAtNs() < 0
-                ? "henüz olmadı"
-                : num(r.firstWaitAtNs() / 1_000_000_000.0, 1) + " sn sonra").append('\n');
-        return b.toString();
-    }
+b.append("\nÖZET\n");
+          appendDuration(b, r.elapsedNs());
+          b.append("  gerçek FPS        ").append(num(r.actualFps(), 1))
+                  .append("  (kare ÷ geçen süre)\n");
+          appendCpu(b, r.totals());
+          b.append("  limiter devrede   ").append(percent(100.0 * active / total)).append('\n');
+          b.append("  ilk bekleme       ").append(r.firstWaitAtNs() < 0
+                  ? "henüz olmadı"
+                  : num(r.firstWaitAtNs() / 1_000_000_000.0, 1) + " sn sonra").append('\n');
+          appendEarlyWindow(b, r);
+          return b.toString();
+      }
+
+    /**
+     * Ölçüm penceresinin uzunluğunu yazar.
+     *
+     * <p>Süre olmadan "spin toplam 286.461,85 ms" tek başına bir anlam taşımaz: aynı
+     * toplam 5 dakikalık oturumda çok ağır, 30 dakikalık oturumda hafif görünür.
+     * Okuyucunun bölme yapmasına gerek bırakmamak için açıkça yazılır.
+     */
+    private static void appendDuration(StringBuilder b, long elapsedNs) {
+          long sec = elapsedNs / 1_000_000_000L;
+          b.append("  süre              ")
+                  .append((int) (sec / 60)).append(':')
+                  .append(String.format(Locale.ROOT, "%02d", sec % 60))
+                  .append("  (").append(sec).append(" sn)\n");
+      }
+
+    /**
+     * Sınırlamanın <b>CPU payını</b> yazar.
+     *
+     * <p>Spin, modun baskın maliyetidir: bekleme sırasında işlemci yanmayan tek
+     * yoldur, park ise uyur. Bu yüzden "spin ne kadar" sorusu "mod ne kadar CPU
+     * yakıyor" sorusunun cevabıdır.
+     *
+     * <p>Park çağrılarının kendisi de CPU harcar (bir syscall). Bu <b>ölçülmüyor</b>;
+     * çevrimdışı koprobeden gelen kabaca bir çağrı başına 45 µs varsayılır ve
+     * olduğu gibi "tahmin" diye yazılır. Ölçülmüş gibi sunulmaz.
+     */
+    private static void appendCpu(StringBuilder b, FramePacingRecorder.Totals t) {
+          if (t.elapsedNs() <= 0) {
+              return;
+          }
+          double spinPct = 100.0 * t.spinNsTotal() / t.elapsedNs();
+          long parkCostNs = t.parkCalls() * PARK_CPU_ESTIMATE_NS;
+          double parkPct = 100.0 * parkCostNs / t.elapsedNs();
+          b.append("  spin             ")
+                  .append(duration(t.spinNsTotal())).append("  =  bir çekirdeğin ")
+                  .append(percent(spinPct)).append("\n");
+          b.append("  park maliyeti    ~").append(duration(parkCostNs))
+                  .append("  =  ~").append(percent(parkPct))
+                  .append("  (TAHMİN, çevrimdışı koprobe)\n");
+          b.append("  ── modun CPU'su  ≈  bir çekirdeğin ")
+                  .append(percent(spinPct + parkPct)).append("\n");
+      }
+
+    /**
+     * İlk {@link FramePacingRecorder#EARLY_WINDOW_NS} dakikanın özeti.
+     *
+     * <p>Koşular arasındaki farkı ölçülebilir kılan sabit pencere. Toplamlar
+     * karşılaştırılamaz: art arda üç koşuda CPU payı %17,0 → %17,5 → %25,1 çıktı ve
+     * kod değişmedi, değişen oynanan içerikti.
+     *
+     * <p>Kısa oturumlarda pencere oluşmamıştır; o durumda uydurma değer basılmaz,
+     * yalnızca ne kadar oynandığı yazılır.
+     */
+    private static void appendEarlyWindow(StringBuilder b, FramePacingRecorder r) {
+          FramePacingRecorder.Totals e = r.earlyWindowTotals();
+          b.append('\n');
+          if (e == null) {
+              long sec = r.elapsedNs() / 1_000_000_000L;
+              b.append("■ İLK 10 DAKİKA — dolmadı (oturum ").append(sec)
+                      .append(" sn); karşılaştırma için en az 600 sn gerekir.\n");
+              return;
+          }
+          long total = e.totalFrames();
+          b.append("■ İLK 10 DAKİKA (0–600 sn) — koşular arası karşılaştırma için\n");
+          b.append("  kare ").append(total)
+                  .append("  ·  gerçek FPS ").append(num(e.fps(), 1))
+                  .append("  ·  limiter devrede ")
+                  .append(percent(100.0 * e.waitingFrames() / total)).append('\n');
+          b.append("  geç kare           ")
+                  .append(percent(100.0 * e.lateFrames() / e.waitingFrames()))
+                  .append('\n');
+          if (e.parkCalls() > 0) {
+              b.append("  park              ").append(e.parkCalls())
+                      .append(" çağrı · istenen ortalama ")
+                      .append(ms(e.parkNsTotal() / e.parkCalls())).append('\n');
+              b.append("  erken dönüş        ").append(e.parkEarlyCalls())
+                      .append("  (")
+                      .append(percent(100.0 * e.parkEarlyCalls() / e.parkCalls()))
+                      .append(", ortalama ")
+                      .append(ms(e.parkEarlyNsTotal() / e.parkEarlyCalls()))
+                      .append(" erken)\n");
+          }
+          if (e.spinEntries() > 0) {
+              b.append("  spin              ")
+                      .append(us(e.spinNsTotal() / e.spinEntries()))
+                      .append("/kare  =  bir çekirdeğin ")
+                      .append(percent(100.0 * e.spinNsTotal() / e.elapsedNs()))
+                      .append("\n");
+          }
+      }
 
     /**
      * Park aşımı dağılımını biçimlendirir.
@@ -167,6 +274,18 @@ public final class FpsSyncStatusReport {
 
     private static String value(long ns) {
         return ns == FramePacingRecorder.SATURATED ? "ölçülemedi" : us(ns);
+    }
+
+    /**
+     * Süreyi okunabilir biçimde yazar: 10 saniyenin altında milisaniye, üstünde saniye.
+     *
+     * <p>"170262.56 ms" okunması zor bir toplamdı; oran hesaplamak için süreye
+     * ihtiyaç duyulan yerlerde sayı zaten daha anlamlı.
+     */
+    private static String duration(long ns) {
+        return ns >= 10_000_000_000L
+                ? num(ns / 1_000_000_000.0, 1) + " sn"
+                : ms(ns);
     }
 
     private static String ms(long ns) {
