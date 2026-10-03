@@ -66,7 +66,20 @@ public final class FramePacingRecorder {
     public static final long SATURATED = -1L;
 
     static final int LATE_BUCKETS = (int) (LATE_FINE_MAX_NS / LATE_FINE_STEP_NS) + 1;
+    /**
+     * Park'ın gerçekte uyuduğu sürenin üst sınırı: 64 ms.
+     *
+     * <p>İstenen süre 60 Hz bütçesinden küçük olmak zorunda, ama taşma durumları ve
+     * düşük FPS'lerde daha uzun olabilir; 64 ms her ikisini de kapsar.
+     */
+    public static final long PARK_ELAPSED_MAX_NS = 64_000_000L;
+
+    /** Park gerçek süre kovasının genişliği: 10 µs. */
+    public static final long PARK_ELAPSED_STEP_NS = 10_000L;
+
     static final int OVERSHOOT_BUCKETS = (int) (OVERSHOOT_MAX_NS / OVERSHOOT_STEP_NS) + 1;
+    static final int PARK_ELAPSED_BUCKETS =
+            (int) (PARK_ELAPSED_MAX_NS / PARK_ELAPSED_STEP_NS) + 1;
 
     /** Bir rejimin tüm sayacı ve histogramı. */
     private static final class Regime {
@@ -82,10 +95,13 @@ public final class FramePacingRecorder {
         long overshootLateCalls;
         long parkEarlyCalls;
         long parkEarlyNsTotal;
+        long parkElapsedCalls;
+        long parkElapsedOverflow;
         long spinNsTotal;
         long spinEntries;
         final int[] lateness = new int[LATE_BUCKETS];
         final int[] overshoot = new int[OVERSHOOT_BUCKETS];
+        final int[] parkElapsed = new int[PARK_ELAPSED_BUCKETS];
 
         void clear() {
             frames = 0;
@@ -100,10 +116,13 @@ public final class FramePacingRecorder {
             overshootLateCalls = 0;
             parkEarlyCalls = 0;
             parkEarlyNsTotal = 0;
+            parkElapsedCalls = 0;
+            parkElapsedOverflow = 0;
             spinNsTotal = 0;
             spinEntries = 0;
             java.util.Arrays.fill(lateness, 0);
             java.util.Arrays.fill(overshoot, 0);
+            java.util.Arrays.fill(parkElapsed, 0);
         }
     }
 
@@ -115,6 +134,25 @@ public final class FramePacingRecorder {
     private volatile boolean paused;
 
     /**
+     * Park süresi <b>ölçülmeden</b> kare kaydeder.
+     *
+     * <p>Yalnız aşım ve aşım dışı dağılımıyla ilgilenen çağrılar için. Üretim yolu
+     * ({@link FpsSyncMod#recordFrameTiming}) daima gerçek süreyi geçirir.
+     *
+     * @param frameNs     kare süresi
+     * @param budgetNs    hedef kare bütçesi
+     * @param waited      sınırlayıcı bekledi mi
+     * @param parkCalls   bu karedeki park çağrısı sayısı
+     * @param parkNs      park için istenen süre
+     * @param overshootNs işaretli aşım (negatif = erken dönüş)
+     * @param spinNs      harcanan spin süresi
+     */
+    public void recordFrame(long frameNs, long budgetNs, boolean waited,
+            int parkCalls, long parkNs, long overshootNs, long spinNs) {
+        recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs, 0L);
+    }
+
+    /**
      * Bir kareyi kaydeder.
      *
      * <p>Sıcak yoldan çağrılır; ayırma, tahsis veya boxing yapmaz.
@@ -124,11 +162,13 @@ public final class FramePacingRecorder {
      * @param waited        sınırlayıcı gerçekten bekledi mi
      * @param parkCalls     bu karedeki park çağrısı sayısı
      * @param parkNs        park için istenen süre toplamı
-     * @param overshootNs   park çağrılarının ortalama aşımı (0 ise kaydedilmez)
+     * @param overshootNs   işaretli aşım; negatifse erken dönüş sayılır
      * @param spinNs        bu karede harcanan spin süresi
+     * @param parkElapsedNs park çağrılarının bu karede gerçekte geçirdiği süre
      */
     public void recordFrame(long frameNs, long budgetNs, boolean waited,
-            int parkCalls, long parkNs, long overshootNs, long spinNs) {
+            int parkCalls, long parkNs, long overshootNs, long spinNs,
+            long parkElapsedNs) {
         if (paused) {
             return;
         }
@@ -159,6 +199,14 @@ public final class FramePacingRecorder {
         if (parkCalls > 0) {
             r.parkCalls += parkCalls;
             r.parkNsTotal += parkNs;
+            if (parkElapsedNs > 0) {
+                r.parkElapsedCalls++;
+                if (parkElapsedNs < PARK_ELAPSED_MAX_NS) {
+                    r.parkElapsed[(int) (parkElapsedNs / PARK_ELAPSED_STEP_NS)]++;
+                } else {
+                    r.parkElapsedOverflow++;
+                }
+            }
             if (overshootNs < 0) {
                 // Park istenenden ERKEN döndü: kalan süre spin ile yakıldı.
                 // Negatif aşım önceden 0'a yassılanıyordu, bu yüzden spin'in neden
@@ -369,7 +417,60 @@ public long activeOvershootMaxNs() {
          *
          * @return aşımı olan park çağrısı sayısı
          */
-        public long activeOvershootLateCalls() {
+        /**
+       * Park'ın gerçekte uyuduğu sürenin medyanı.
+       *
+       * <p>İstenen süreden kısa olduğu için bekleme yapılmamış demektir ve kalan
+       * süre spin ile yakılmıştır. Ortalama tek başına şekli söylemez; bu yüzden
+       * gerçek süre doğrudan histogramlanır.
+       *
+       * @return nanosaniye; ölçülemiyorsa {@link #SATURATED}
+       */
+      public long activeParkElapsedMedianNs() {
+          return percentile(active.parkElapsed, active.parkElapsedCalls,
+                  PARK_ELAPSED_STEP_NS, 0.50);
+      }
+
+      /**
+       * Park'ın gerçekte uyuduğu sürenin istenen yüzdeliği.
+       *
+       * @param q istenen yüzdelik, 0–1 arası
+       * @return nanosaniye; ölçülemiyorsa {@link #SATURATED}
+       */
+      public long activeParkElapsedPercentileNs(double q) {
+          return percentile(active.parkElapsed, active.parkElapsedCalls,
+                  PARK_ELAPSED_STEP_NS, q);
+      }
+
+      /**
+       * Gerçek park süresi kaydedilen çağrı sayısı.
+       *
+       * @return park çağrısı sayısı
+       */
+      public long activeParkElapsedCalls() {
+          return active.parkElapsedCalls;
+      }
+
+      /**
+       * Park süresi histogramının üst sınırını aşan çağrı sayısı.
+       *
+       * @return taşan çağrı sayısı
+       */
+      public long activeParkElapsedOverflow() {
+          return active.parkElapsedOverflow;
+      }
+
+      /**
+       * Aşım dağılımının örnek sayısı: <b>geç dönen</b> park çağrıları.
+       *
+       * <p>Erken dönüşler aşım değildir ve histograma girmez. Yüzdelik hesabında
+       * payda olarak tüm park çağrıları kullanılırsa, erken dönüş olan her koşuda
+       * medyan ve p95 doygunlaşır ve "ölçülemez" görünür. 2026-10-02 koşusunda olan
+       * da buydu: 27.902 örnek, 27.945 hedef.
+       *
+       * @return aşımı olan park çağrısı sayısı
+       */
+      public long activeOvershootLateCalls() {
             return active.overshootLateCalls;
         }
 

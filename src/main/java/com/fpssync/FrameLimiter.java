@@ -218,6 +218,8 @@ public class FrameLimiter {
        * erken dönüş miktarı spin süresini doğrudan açıklar.
        */
       long parkOvershootNsLastFrame;
+      /** Bu karede park çağrılarının gerçekte geçirdiği süre. */
+      long parkElapsedNsLastFrame;
     /** Bu karede harcanan spin süresi. */
     long spinNsLastFrame;
     /** Beklemeden önceki kare için hedef bütçe; 0 ise sınırlayıcı kapalıydı. */
@@ -242,6 +244,7 @@ public class FrameLimiter {
         parkCallsLastFrame = 0;
         parkRequestedNsLastFrame = 0;
         parkOvershootNsLastFrame = 0;
+        parkElapsedNsLastFrame = 0;
         spinNsLastFrame = 0;
         frameBudgetNsLastFrame = 0;
         nanoTimeLastFrame = 0;
@@ -352,6 +355,9 @@ try {
               // Erken dönüş daha önce 0'a yassılanıyordu; oysa kalan süre spin ile
               // yakıldığı için erken dönüş miktarı doğrudan spin süresini açıklar.
               parkOvershootNsLastFrame = spinStart - now - sleepNs;
+              // Gerçek uyunan süre. İstenen süreden kısa ise park beklemedi demektir;
+              // aşımın dağılımı bu bilgiyi doğrudan vermediği için ayrıca ölçülür.
+              parkElapsedNsLastFrame = spinStart - now;
           }
         Runnable hook = spinHook;
         if (hook == NO_SPIN_HOOK) {

@@ -75,6 +75,7 @@ public final class FpsSyncStatusReport {
                 b.append("  park        ").append(r.activeParkCalls())
                         .append(" çağrı · istenen ortalama ")
                         .append(ms(r.activeParkNsTotal() / r.activeParkCalls())).append('\n');
+                b.append("  park gerçek ").append(parkElapsedLine(r)).append('\n');
                 b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
                 b.append("               dağılım ")
                         .append(r.activeOvershootLateCalls()).append(" geç dönüş üzerinden")
@@ -136,6 +137,30 @@ public final class FpsSyncStatusReport {
         if (median == FramePacingRecorder.SATURATED || p95 == FramePacingRecorder.SATURATED) {
             b.append(" · en kötü ").append(us(r.activeOvershootMaxNs()))
                     .append(" (dağılım ölçüm aralığının dışında)");
+        }
+        return b.toString();
+    }
+
+    /**
+     * Park'ın <em>gerçekte</em> uyuduğu süreyi biçimlendirir.
+     *
+     * <p>İstenen süreyle karşılaştırılabilmesi için ikisi yan yana basılır: park
+     * istenenden kısa uyuyorsa bekleme yapmamış, kalan süre spin ile yakılmış demektir.
+     * 2026-10-02 koşusunda karelerin yarısında fark 6,93 ms'ydı ve bu satır olmadan
+     * neden görünmüyordu.
+     */
+    private static String parkElapsedLine(FramePacingRecorder r) {
+        long p95 = r.activeParkElapsedPercentileNs(0.95);
+        long p05 = r.activeParkElapsedPercentileNs(0.05);
+        if (r.activeParkElapsedCalls() == 0) {
+            return "ölçülmedi";
+        }
+        StringBuilder b = new StringBuilder(80);
+        b.append("uyudu medyan ").append(value(r.activeParkElapsedMedianNs()))
+                .append(" · p05 ").append(value(p05))
+                .append(" · p95 ").append(value(p95));
+        if (r.activeParkElapsedOverflow() > 0) {
+            b.append(" · tavan dışı ").append(r.activeParkElapsedOverflow());
         }
         return b.toString();
     }
