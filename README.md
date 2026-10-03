@@ -36,3 +36,22 @@ not specific to this mod. Move the window so it sits fully inside the monitor yo
 **Does it conflict with V-Sync or with other limiters?**
 Turn V-Sync off: FPS Sync works by replacing V-Sync's pacing. Running another FPS limiter
 at the same time will fight it.
+
+---
+
+## Sürüm geçmişi
+
+Sürüm notları: [`docs/CHANGELOG.md`](docs/CHANGELOG.md)
+
+## Ölçüm: `/fpsync status`
+
+Oyun içinde `/fpsync status` yazarak kare zamanlamasının dökümünü alabilirsin:
+
+- iki rejimi ayrı raporlar — sınırlayıcı **beklerken** ve oyun hedefe ulaşmadığı
+  için **boşta**
+- raporu `fps-sync/` klasörüne yazar, panoya kopyalamayı dener, dosya yolunu
+  sohbete basar
+- `/fpsync status keep` sayaçları sıfırlamaz, `/fpsync status reset` yalnız sıfırlar
+
+Araç kare zamanlamasını ölçer, **FPS'i yükseltmez.** Oyun hedef hızı üretemiyorsa
+mod yapabileceğini yapar; "boşta" bölümü bu ayrımı gösterir.
