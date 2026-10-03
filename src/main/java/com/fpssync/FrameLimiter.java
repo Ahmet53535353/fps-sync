@@ -220,6 +220,16 @@ public class FrameLimiter {
       long parkOvershootNsLastFrame;
       /** Bu karede park çağrılarının gerçekte geçirdiği süre. */
       long parkElapsedNsLastFrame;
+      /**
+       * Park anında interrupt bayrağı set olan kare (1/0).
+       *
+       * <p><b>Teşhis;</b> temizlenmez. {@code LockSupport.parkNanos} interrupt durumu
+       * set ise anında döner, kalan süre spin ile yakılır. 2026-10-02'de üç koşuda da
+       * park ikiye bölünmüştü ve {@code p05} sıfırdı.
+       */
+      int interruptFlagSetFrames;
+      /** Bu karede yakalanan {@link InterruptedException} sayısı. */
+      int interruptsCaught;
     /** Bu karede harcanan spin süresi. */
     long spinNsLastFrame;
     /** Beklemeden önceki kare için hedef bütçe; 0 ise sınırlayıcı kapalıydı. */
@@ -245,6 +255,8 @@ public class FrameLimiter {
         parkRequestedNsLastFrame = 0;
         parkOvershootNsLastFrame = 0;
         parkElapsedNsLastFrame = 0;
+        interruptFlagSetFrames = 0;
+        interruptsCaught = 0;
         spinNsLastFrame = 0;
         frameBudgetNsLastFrame = 0;
         nanoTimeLastFrame = 0;
@@ -329,7 +341,15 @@ public class FrameLimiter {
         if (sleepNs > 0) {
             parkCallsLastFrame = 1;
             parkRequestedNsLastFrame += sleepNs;
-try {
+            // Teşhis: park anında kesinti bayrağı set mi? Okunur, TEMİZLENMEZ.
+            // Temizlemek oyun iş parçacığının davranışını değiştirirdi; burada yalnız
+            // ölçülüyor. LockSupport.parkNanos interrupt durumu set ise anında döner ve
+            // kalan süre spin ile yakılır — 2026-10-02'de üç koşuda da park ikiye
+            // bölünmüştü ve p05 sıfırdı.
+            if (Thread.currentThread().isInterrupted()) {
+                interruptFlagSetFrames = 1;
+            }
+            try {
                   // Nanosaniye değeri doğrudan korunur. Thread.sleep(ms) kullanılsaydı
                   // kırpma 0.1 ms'lik spin penceresini yutardı: kalan süre 1.1 ms'nin
                   // altına düşünce uyku hiç yapılmaz ve kalan sürenin tamamı spin
@@ -343,6 +363,7 @@ try {
                   // demektir.
                   sleeper.park(sleepNs);
               } catch (InterruptedException e) {
+                  interruptsCaught++;
                   Thread.currentThread().interrupt();
               }
           }

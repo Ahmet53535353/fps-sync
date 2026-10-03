@@ -85,7 +85,8 @@ public class FpsSyncMod implements ClientModInitializer {
                     PACING.recordFrame(frameNs, budget, limiter.waitedLastFrame == 1,
                             limiter.parkCallsLastFrame, limiter.parkRequestedNsLastFrame,
                             limiter.parkOvershootNsLastFrame, limiter.spinNsLastFrame,
-                            limiter.parkElapsedNsLastFrame);
+                            limiter.parkElapsedNsLastFrame,
+                            limiter.interruptFlagSetFrames, limiter.interruptsCaught);
                 }
             }
             lastFrameNsBase = now;

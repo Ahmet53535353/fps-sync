@@ -107,6 +107,8 @@ public final class FramePacingRecorder {
         long parkEarlyNsTotal;
         long parkElapsedCalls;
         long parkElapsedOverflow;
+        long interruptFlagFrames;
+        long interruptsCaught;
         long spinNsTotal;
         long spinEntries;
         final int[] lateness = new int[LATE_BUCKETS];
@@ -136,6 +138,8 @@ public final class FramePacingRecorder {
             parkEarlyNsTotal = other.parkEarlyNsTotal;
             parkElapsedCalls = other.parkElapsedCalls;
             parkElapsedOverflow = other.parkElapsedOverflow;
+            interruptFlagFrames = other.interruptFlagFrames;
+            interruptsCaught = other.interruptsCaught;
             spinNsTotal = other.spinNsTotal;
             spinEntries = other.spinEntries;
             System.arraycopy(other.lateness, 0, lateness, 0, LATE_BUCKETS);
@@ -158,6 +162,8 @@ public final class FramePacingRecorder {
             parkEarlyNsTotal = 0;
             parkElapsedCalls = 0;
             parkElapsedOverflow = 0;
+            interruptFlagFrames = 0;
+            interruptsCaught = 0;
             spinNsTotal = 0;
             spinEntries = 0;
             java.util.Arrays.fill(lateness, 0);
@@ -184,23 +190,43 @@ public final class FramePacingRecorder {
     private long firstWaitAtNs = -1;
     private volatile boolean paused;
 
-    /**
-     * Park süresi <b>ölçülmeden</b> kare kaydeder.
-     *
-     * <p>Yalnız aşım ve aşım dışı dağılımıyla ilgilenen çağrılar için. Üretim yolu
-     * ({@link FpsSyncMod#recordFrameTiming}) daima gerçek süreyi geçirir.
-     *
-     * @param frameNs     kare süresi
-     * @param budgetNs    hedef kare bütçesi
-     * @param waited      sınırlayıcı bekledi mi
-     * @param parkCalls   bu karedeki park çağrısı sayısı
-     * @param parkNs      park için istenen süre
-     * @param overshootNs işaretli aşım (negatif = erken dönüş)
-     * @param spinNs      harcanan spin süresi
-     */
-    public void recordFrame(long frameNs, long budgetNs, boolean waited,
-            int parkCalls, long parkNs, long overshootNs, long spinNs) {
-        recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs, 0L);
+/**
+       * Park süresi ve kesinti teşhisi <b>ölçülmeden</b> kare kaydeder.
+       *
+       * <p>Yalnız aşım/aşım dışı dağılımıyla ilgilenen çağrılar için. Üretim yolu
+       * ({@link FpsSyncMod#recordFrameTiming}) daima gerçek süreyi ve teşhisi geçirir.
+       *
+       * @param frameNs     kare süresi
+       * @param budgetNs    hedef kare bütçesi
+       * @param waited      sınırlayıcı bekledi mi
+       * @param parkCalls   bu karedeki park çağrısı sayısı
+       * @param parkNs      park için istenen süre
+       * @param overshootNs işaretli aşım (negatif = erken dönüş)
+       * @param spinNs      harcanan spin süresi
+       */
+      public void recordFrame(long frameNs, long budgetNs, boolean waited,
+              int parkCalls, long parkNs, long overshootNs, long spinNs) {
+          recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs,
+                  0L, 0L, 0L);
+      }
+
+      /**
+       * Park süresi ölçülmeden kare kaydeder; teşhis sayaçları geçirilir.
+       *
+       * @param frameNs     kare süresi
+       * @param budgetNs    hedef kare bütçesi
+       * @param waited      sınırlayıcı bekledi mi
+       * @param parkCalls   bu karedeki park çağrısı sayısı
+       * @param parkNs      park için istenen süre
+       * @param overshootNs işaretli aşım (negatif = erken dönüş)
+       * @param spinNs      harcanan spin süresi
+       * @param parkElapsedNs park'ın gerçekte geçirdiği süre
+       */
+      public void recordFrame(long frameNs, long budgetNs, boolean waited,
+              int parkCalls, long parkNs, long overshootNs, long spinNs,
+              long parkElapsedNs) {
+          recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs,
+                  parkElapsedNs, 0L, 0L);
     }
 
     /**
@@ -216,10 +242,12 @@ public final class FramePacingRecorder {
      * @param overshootNs   işaretli aşım; negatifse erken dönüş sayılır
      * @param spinNs        bu karede harcanan spin süresi
      * @param parkElapsedNs park çağrılarının bu karede gerçekte geçirdiği süre
+     * @param interruptFlagFrames park anında kesinti bayrağı set olan kare
+     * @param interruptsCaught    yakalanan {@link InterruptedException} sayısı
      */
     public void recordFrame(long frameNs, long budgetNs, boolean waited,
             int parkCalls, long parkNs, long overshootNs, long spinNs,
-            long parkElapsedNs) {
+            long parkElapsedNs, long interruptFlagFrames, long interruptsCaught) {
         if (paused) {
             return;
         }
@@ -246,6 +274,9 @@ public final class FramePacingRecorder {
             // kare de bekmedir, park çağrısı yapmadan.
             firstWaitAtNs = elapsedNs;
         }
+
+        r.interruptFlagFrames += interruptFlagFrames;
+        r.interruptsCaught += interruptsCaught;
 
         if (parkCalls > 0) {
             r.parkCalls += parkCalls;
@@ -308,10 +339,13 @@ public final class FramePacingRecorder {
      * @param parkNsTotal    park için istenen süre toplamı
      * @param parkEarlyCalls istenenden erken dönen park çağrısı
      * @param parkEarlyNsTotal erken dönüşlerin toplam büyüklüğü
+     * @param interruptFlagFrames park anında kesinti bayrağı set olan kare
+     * @param interruptsCaught    yakalanan {@link InterruptedException} sayısı
      */
     public record Totals(long elapsedNs, long waitingFrames, long idleFrames,
             long lateFrames, long spinNsTotal, long spinEntries, long parkCalls,
-            long parkNsTotal, long parkEarlyCalls, long parkEarlyNsTotal) {
+            long parkNsTotal, long parkEarlyCalls, long parkEarlyNsTotal,
+            long interruptFlagFrames, long interruptsCaught) {
 
 /**
            * Penceredeki toplam kare: bekleyen ve boşta geçenler.
@@ -362,7 +396,8 @@ public final class FramePacingRecorder {
     private static Totals totalsOf(Regime a, Regime i, long elapsed) {
         return new Totals(elapsed, a.frames, i.frames, a.lateFrames,
                 a.spinNsTotal, a.spinEntries, a.parkCalls, a.parkNsTotal,
-                a.parkEarlyCalls, a.parkEarlyNsTotal);
+                a.parkEarlyCalls, a.parkEarlyNsTotal,
+                a.interruptFlagFrames, a.interruptsCaught);
     }
 
     /** Rapor üretimi sırasında ölçümü durdurmak için. */
@@ -607,9 +642,43 @@ public long activeOvershootMaxNs() {
        *
        * @return aşımı olan park çağrısı sayısı
        */
+      /**
+       * Park anında interrupt bayrağı set olan kare sayısı.
+       *
+       * <p>Teşhis. Sıfırdan büyükse park'ın bazen uyumadan dönmesinin interrupt
+       * kaynaklı olma olasılığı güçlenir: {@code LockSupport.parkNanos} interrupt
+       * durumu set ise anında döner.
+       *
+       * @return bayrak set olduğu kare sayısı
+       */
+      public long interruptFlagFrames() {
+          return active.interruptFlagFrames;
+      }
+
+      /**
+       * Sınırlayıcının yakaladığı {@link InterruptedException} sayısı.
+       *
+       * <p>Teşhis. Sıfırken hiç kesinti olmamış demektir; bu durumda bayrak sorunu da
+       * yoktur ve açıklama başka yerde aranmalıdır.
+       *
+       * @return yakalanan kesinti sayısı
+       */
+      public long interruptsCaught() {
+          return active.interruptsCaught;
+      }
+
+      /**
+       * Aşım dağılımının örnek sayısı: <b>geç dönen</b> park çağrıları.
+       *
+       * <p>Erken dönüşler aşım değildir ve histograma girmez. Yüzdelik hesabında payda
+       * olarak tüm park çağrıları kullanılırsa, erken dönüş olan her koşuda medyan ve p95
+       * doygunlaşır ve "ölçülemez" görünür.
+       *
+       * @return aşımı olan park çağrısı sayısı
+       */
       public long activeOvershootLateCalls() {
-            return active.overshootLateCalls;
-        }
+          return active.overshootLateCalls;
+      }
 
         /**
          * Sınırlayıcı beklerken histogramın üst sınırını aşan aşım sayısı.

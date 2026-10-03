@@ -90,6 +90,7 @@ public final class FpsSyncStatusReport {
                         .append(ms(r.activeParkNsTotal() / r.activeParkCalls())).append('\n');
                 b.append("  park gerçek ").append(parkElapsedLine(r)).append('\n');
                 b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
+                appendInterruptLine(b, r);
                 b.append("               dağılım ")
                         .append(r.activeOvershootLateCalls()).append(" geç dönüş üzerinden")
                         .append(", ").append(r.activeParkEarlyCalls())
@@ -236,6 +237,31 @@ b.append("\nÖZET\n");
      * tam olarak "1000.0 µs" çıkıyor, bu da "ölçemedim" ile "tam 1 ms" arasındaki
      * farkı siliyordu.
      */
+    /**
+     * Kesinti teşhisini yazar.
+     *
+     * <p>Park üç koşuda ikiye bölünmüştü (yarısı tam süre, yarısı onda biri) ve
+     * {@code p05} sıfırdı. En olası açıklama: interrupt bayrağı set kaldığında
+     * {@code LockSupport.parkNanos} anında döner. Bu satır o varsayımı doğrular ya da
+     * reddeder; <b>teşhistir, düzeltme değildir</b> — bayrağa dokunulmaz.
+     *
+     * <p>Sayaçlar sıfır çıkarsa varsayım yanlıştır ve park-tekrarı tek başına yeter.
+     */
+    private static void appendInterruptLine(StringBuilder b, FramePacingRecorder r) {
+        long flagged = r.interruptFlagFrames();
+        long caught = r.interruptsCaught();
+        if (flagged == 0 && caught == 0) {
+            b.append("  kesinti        yok (park anında bayrak set olmadı)\n");
+            return;
+        }
+        long park = r.activeParkCalls();
+        b.append("  kesinti        park anında bayrak SET: ").append(flagged).append(" kare");
+        if (park > 0) {
+            b.append(" (").append(percent(100.0 * flagged / park)).append(')');
+        }
+        b.append(" · yakalanan InterruptedException: ").append(caught).append('\n');
+    }
+
     private static String overshootLine(FramePacingRecorder r) {
         long median = r.activeOvershootMedianNs();
         long p95 = r.activeOvershootPercentileNs(0.95);
