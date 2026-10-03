@@ -42,9 +42,14 @@ import java.util.function.LongSupplier;
  * <tr><td>park CPU'su — 1 ms / 5 ms / 15 ms / 50 ms</td><td>24 / 45 / 51 / 53 µs</td></tr>
  * <tr><td>{@code Thread.sleep(0)} — çıplak syscall</td><td>1.17 µs</td></tr>
  * <tr><td>{@code System.nanoTime()}</td><td>29 ns</td></tr>
- * <tr><td>park duvar aşımı (timer slack)</td><td>~100 µs</td></tr>
- * <tr><td>allocasyon / {@code limitFrame()} çağrısı</td><td>0 bayt (10<sup>6</sup> çağrı)</td></tr>
- * </table>
+* <tr><td>park duvar aşımı (timer slack) — <b>yalnız çevrimdışı</b></td><td>~100 µs</td></tr>
+   * <tr><td>allocasyon / {@code limitFrame()} çağrısı</td><td>0 bayt (10<sup>6</sup> çağrı)</td></tr>
+   * </table>
+   *
+   * <p><b>Tablo ne zaman geçerli.</b> Tablodaki "kare başına CPU 60-67 µs" yalnız
+   * park istenen süreyi spin penceresi kadar aşarak döndüğünde doğrudur. Oyun içinde
+   * bu koşul sağlanmıyor ve gerçek maliyet <b>3534 µs/kare</b> çıktı
+   * (aşağıdaki oyun içi ölçüme bakın).
  *
  * <p><b>Park'ın maliyeti süreyle ölçeklenmiyor</b> (1 ms'de 24 µs, 50 ms'de 53 µs):
  * sabit bir giderdir. {@code Thread.sleep(0)} ile karşılaştırıldığında zamanlı bir
@@ -99,9 +104,39 @@ import java.util.function.LongSupplier;
  *  300 µs       79 µs      17.36 ms  257.6 µs
  * </pre>
  *
- * Yani 100 µs doğru seçilmiştir; penceresiz bırakmak sapmayı 6 kat artırıyor, 300 µs
- * ise hem CPU'yi 4 katına çıkarıyor hem sapmayı kötüleştiriyor.
- *
+* Yani <b>çevrimdışı ölçüm koşullarında</b> 100 µs doğru seçilmiştir; penceresiz
+   * bırakmak sapmayı 6 kat artırıyor, 300 µs ise hem CPU'yi 4 katına çıkarıyor hem
+   * sapmayı kötüleştiriyor. Oyun içinde bu koşul sağlanmadığı için sonuç tersine
+   * dönüyor:
+   *
+   * <h2>Oyun içi ölçüm: bu tablo geçerli değil</h2>
+   * Yukarıdaki tablo <b>çevrimdışı</b> bir ölçümdür ve tek bir koşula dayanır:
+   * <pre>
+   *   park istenen süreyi, spin penceresinden az fazla aşarak döner
+   * </pre>
+   * Bu koşul sağlanırsa spin penceresi gerçekten 100 µs olur ve kare başına CPU
+   * 66 µs'ta kalır. Oyun içinde koşul <b>sağlanmıyor</b>.
+   *
+   * <p>2026-10-02'de gerçek oyunda ölçüldü ({@code /fpsync status}, 61.743 kare,
+   * 54,7 FPS, 1129 sn):
+   * <pre>
+   *   spin                3534 µs/kare   ->  bir çekirdeğin %17,5'i
+   *   park erken dönüş    27.987 / 55.889 çağrı (%50,1), ortalama 6,93 ms ERKEN
+   * </pre>
+   * Yani karelerin yarısında park <b>erken</b> dönüyor ve kalan ~7 ms'nin tamamı spin
+   * ile yakılıyor. Etkin spin penceresi 100 µs değil, milisaniyeler.
+   *
+   * <p>Bu, çevrimdışı tahminin <b>54 katı</b>. Karşılaştırma için aynı tablodaki eski
+   * yol: çevrimdışı 1504 µs/kare CPU. Bugün oyun içi 3534 µs — yani düzeltme
+   * niyetiyle (spin'i 1,5 ms'den 100 µs'ye indirmek) yapılan değişiklik, oyun içinde
+   * <b>daha pahalı</b> bir sonuç verdi, çünkü dayandığı "park geç döner" varsayımı
+   * sağlanmıyor.
+   *
+   * <p><b>Ders:</b> "park aşımı ~90-100 µs" ifadesi boş bir JVM'de ölçülmüştü.
+   * Oyun içinde park'ın yarıda karelerde 6,93 ms <em>erken</em> döndüğü görüldü.
+   * Spin penceresinin küçüklüğü ancak park pencere kadar geç döndüğünde anlamlıdır;
+   * bu güvence olmadan pencereyi küçültmek ters etki yaratır.
+   *
  * <p><em>Tarihçe notu: burada daha önce "ortalama spin 532 µs, %3.2, 10.7 kat iyileşme"
  * yazıyordu. Bunlar sanal saat modelinin <b>tahminidir, ölçüm değildir</b>; model
  * {@code Thread.sleep} aşımını ~1 ms varsaymış, ölçülen aşım ~150-200 µs çıktı. Gerçek
