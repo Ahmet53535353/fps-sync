@@ -79,6 +79,7 @@ public final class FramePacingRecorder {
         long parkNsTotal;
         long overshootOverflow;
         long overshootMaxNs;
+        long overshootLateCalls;
         long parkEarlyCalls;
         long parkEarlyNsTotal;
         long spinNsTotal;
@@ -96,6 +97,7 @@ public final class FramePacingRecorder {
             parkNsTotal = 0;
             overshootOverflow = 0;
             overshootMaxNs = 0;
+            overshootLateCalls = 0;
             parkEarlyCalls = 0;
             parkEarlyNsTotal = 0;
             spinNsTotal = 0;
@@ -164,6 +166,7 @@ public final class FramePacingRecorder {
                 r.parkEarlyCalls++;
                 r.parkEarlyNsTotal += -overshootNs;
             } else if (overshootNs > 0) {
+                r.overshootLateCalls++;
                 if (overshootNs > r.overshootMaxNs) {
                     r.overshootMaxNs = overshootNs;
                 }
@@ -356,18 +359,32 @@ public long activeOvershootMaxNs() {
           return active.overshootMaxNs;
       }
 
-      /**
-       * Sınırlayıcı beklerken histogramın üst sınırını aşan aşım sayısı.
-       *
-       * <p>Bu sayı sıfır değilse ilgili yüzdelikler {@link #SATURATED} döner. Daha önce
-       * bu sayaç yalnızca içeride tutuluyor, raporda hiç görünmüyordu; o yüzden
-       * "ölçemedim" ile "aşım tam 1 ms" ayırt edilemiyordu.
-       *
-       * @return tavanı aşan park çağrısı sayısı
-       */
-      public long activeOvershootOverflow() {
-          return active.overshootOverflow;
-      }
+/**
+         * Aşım dağılımının örnek sayısı: <b>geç dönen</b> park çağrıları.
+         *
+         * <p>Erken dönüşler aşım değildir ve histograma girmez. Yüzdelik hesabında
+         * payda olarak {@code parkCalls} kullanılırsa, erken dönüş olan her koşuda
+         * medyan ve p95 doygunlaşır ve "ölçülemez" görünür — 2026-10-02 koşusunda
+         * olan da buydu. Doğru payda histogramdaki örnek sayısıdır.
+         *
+         * @return aşımı olan park çağrısı sayısı
+         */
+        public long activeOvershootLateCalls() {
+            return active.overshootLateCalls;
+        }
+
+        /**
+         * Sınırlayıcı beklerken histogramın üst sınırını aşan aşım sayısı.
+         *
+         * <p>Bu sayı sıfır değilse ilgili yüzdelikler {@link #SATURATED} döner. Daha önce
+         * bu sayaç yalnızca içeride tutuluyor, raporda hiç görünmüyordu; o yüzden
+         * "ölçemedim" ile "aşım tam 1 ms" ayırt edilemiyordu.
+         *
+         * @return tavanı aşan park çağrısı sayısı
+         */
+        public long activeOvershootOverflow() {
+            return active.overshootOverflow;
+        }
 
       /**
        * Park'ın istenenden <em>erken</em> döndüğü çağrı sayısı.
@@ -397,7 +414,7 @@ public long activeOvershootMaxNs() {
      * @return nanosaniye cinsinden medyan aşım
      */
     public long activeOvershootMedianNs() {
-        return percentile(active.overshoot, active.parkCalls, OVERSHOOT_STEP_NS, 0.50);
+        return percentile(active.overshoot, active.overshootLateCalls, OVERSHOOT_STEP_NS, 0.50);
     }
 
     /**
@@ -406,7 +423,7 @@ public long activeOvershootMaxNs() {
      * @return park aşımının istenen yüzdeliği, nanosaniye
      */
     public long activeOvershootPercentileNs(double q) {
-        return percentile(active.overshoot, active.parkCalls, OVERSHOOT_STEP_NS, q);
+        return percentile(active.overshoot, active.overshootLateCalls, OVERSHOOT_STEP_NS, q);
     }
 
     /**

@@ -76,6 +76,10 @@ public final class FpsSyncStatusReport {
                         .append(" çağrı · istenen ortalama ")
                         .append(ms(r.activeParkNsTotal() / r.activeParkCalls())).append('\n');
                 b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
+                b.append("               dağılım ")
+                        .append(r.activeOvershootLateCalls()).append(" geç dönüş üzerinden")
+                        .append(", ").append(r.activeParkEarlyCalls())
+                        .append(" erken dönüş sayılmadı\n");
                 if (r.activeOvershootOverflow() > 0) {
                     b.append("               ↳ tavan dışı ")
                             .append(r.activeOvershootOverflow()).append(" çağrı (")

@@ -103,7 +103,14 @@ class FpsSyncStatusReportTest {
     void formattingIsLocaleIndependent() {
         String out = FpsSyncStatusReport.render(sample());
 
-        assertFalse(out.contains(","), "ondalık ayırıcı virgül olmamalı (deterministik test)");
+        // Niyet: sayıların ondalık ayırıcısı virgül olmasın (Türkçe yerel ayarı).
+        // Tüm virgülleri yasaklamak çok geniş bir denetlemdi: rapor bir cümle
+        // içinde virgül kullandığında kırılıyordu, oysa ondalıkla ilgisi yoktu.
+        // Bu yüzden yalnız rakam- virgül -rakam biçimini arıyoruz.
+        assertFalse(out.matches("(?s).*\\d,\\d.*"),
+                "ondalık ayırıcı virgül olmamalı (deterministik test)");
+        assertTrue(out.matches("(?s).*\\d\\.\\d.*"),
+                "ondalık ayırıcı nokta olmalı");
     }
 
     @Test
