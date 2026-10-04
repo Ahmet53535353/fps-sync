@@ -212,28 +212,47 @@ b.append("\nÖZET\n");
                   .append("  ·  gerçek FPS ").append(num(e.fps(), 1))
                   .append("  ·  limiter devrede ")
                   .append(percent(100.0 * e.waitingFrames() / total)).append('\n');
-          b.append("  geç kare           ")
-                  .append(percent(100.0 * e.lateFrames() / e.waitingFrames()))
-                  .append('\n');
-          if (e.parkCalls() > 0) {
-              b.append("  park              ").append(e.parkCalls())
-                      .append(" çağrı · istenen ortalama ")
-                      .append(ms(e.parkNsTotal() / e.parkCalls())).append('\n');
-              b.append("  erken dönüş        ").append(e.parkEarlyCalls())
-                      .append("  (")
-                      .append(percent(100.0 * e.parkEarlyCalls() / e.parkCalls()))
-                      .append(", ortalama ")
-                      .append(ms(e.parkEarlyNsTotal() / e.parkEarlyCalls()))
-                      .append(" erken)\n");
-          }
-          if (e.spinEntries() > 0) {
-              b.append("  spin              ")
-                      .append(us(e.spinNsTotal() / e.spinEntries()))
-                      .append("/kare  =  bir çekirdeğin ")
-                      .append(percent(100.0 * e.spinNsTotal() / e.elapsedNs()))
-                      .append("\n");
-          }
-      }
+// Paydalar ayrı ayrı korunur: sıfır olan bölünürse ArithmeticException atılır.
+        // Üçü de gerçekten sıfır olabilir.
+        //
+        // waitingFrames == 0 → sınırlayıcı ilk 10 dakikada HİÇ devreye girmedi, yani
+        // oyun 60'a hiç ulaşamadı. Mümkün.
+        //
+        // parkEarlyCalls == 0 → park çağrısı yapılmış ama hiçbiri ERKEN dönmemiş. Bu
+        // kenar durum değil, 1.4.0'dan SONRA beklenen durum: retry park'ın erken
+        // dönüşünü düzeltiyor, yani sağlıklı bir koşuda erken dönüş sayısı sıfıra
+        // yaklaşır ve rapor çökerdi.
+        if (e.waitingFrames() > 0) {
+            b.append("  geç kare           ")
+                    .append(percent(100.0 * e.lateFrames() / e.waitingFrames()))
+                    .append('\n');
+        }
+        if (e.parkCalls() > 0) {
+            b.append("  park              ").append(e.parkCalls())
+                    .append(" çağrı · istenen ortalama ")
+                    .append(ms(e.parkNsTotal() / e.parkCalls())).append('\n');
+        }
+        if (e.parkEarlyCalls() > 0) {
+            b.append("  erken dönüş        ").append(e.parkEarlyCalls())
+                    .append("  (")
+                    .append(percent(100.0 * e.parkEarlyCalls() / e.parkCalls()))
+                    .append(", ortalama ")
+                    .append(ms(e.parkEarlyNsTotal() / e.parkEarlyCalls()))
+                    .append(" erken)\n");
+        }
+        // elapsedNs koruması SAVUNMA amaçlıdır ve fiilen erişilemez:
+            // recordFrame yalnız frameNs > 0 iken çağrıldığı için spinEntries > 0
+            // olduğunda elapsedNs > 0 olur. Bunu bir testle kanıtlamak mümkün değil —
+            // mutasyon denendi ve testler kaçmadı. Yanlış bir güvence izlenimi
+            // vermemek için buradaki not düşüldü: satır başı savunma, ölçülen değil.
+            if (e.spinEntries() > 0 && e.elapsedNs() > 0) {
+            b.append("  spin              ")
+                    .append(us(e.spinNsTotal() / e.spinEntries()))
+                    .append("/kare  =  bir çekirdeğin ")
+                    .append(percent(100.0 * e.spinNsTotal() / e.elapsedNs()))
+                    .append("\n");
+        }
+    }
 
     /**
      * Park aşımı dağılımını biçimlendirir.
@@ -383,31 +402,117 @@ b.append("\nÖZET\n");
     /**
  * {@code Window#swapBuffers()} süresi — GPU darboğaz göstergesi.
  *
- * <p>V-Sync kapalıyken swap normalde yüzlerce mikrosaniyede döner, kuyruk doluysa
- * bloklar. Bu satır "geç kalma CPU'dan mı GPU'dan" sorusunu doğrudan yanıtlar:
+ * <h2>Neden bütçe yüzdesi</h2>
+ * "1,63 ms" zihinsel bölme ister, "%9,8" istemez. Ayrıca mutlak mikrosaniye karar
+ * vermeye yetmez: 16,67 ms bütçede 2 ms ciddi, 240 ms bütçede önemsizdir.
+ *
+ * <h2>Neden ortalama, en kötü değil</h2>
+ * 1.4.0'ın eşiği <b>en kötü</b> değere konmuştu ve ilk gerçek koşusunda şu sonucu verdi:
  *
  * <pre>
- *   swap ≈ 200 µs → GPU yetişiyor; geç kalmanın sebebi CPU/sınırlayıcı
- *   swap ≈ 16 ms  → swap kare süresi kadar blokluyor; GPU darboğaz
+ *   swap ortalama 1.629,8 µs  ·  en kötü 12,78 ms  ·  GPU darboğazı olası
  * </pre>
+ *
+ * Oysa ortalama 16,67 ms bütçenin <b>%9,8</b>'iydi. <b>Tek bir aykırı kare</b> tüm
+ * sistemik maliyeti gizledi ve "dur, sorun GPU" dedi. Oysa sunum bedeli %10'dur;
+ * darboğaz değil. Karar artık ortalamaya bakar, en kötü değer hâlâ raporlanır — yani
+ * bilgi kaybı yok, sadece kararın dayanağı değişti.
+ *
+ * <pre>
+ *   ortalamada &lt; %5 → GPU etkisiz
+ *   %5 – %25           → sunum bedeli, darboğaz değil
+ *   &gt; %25            → GPU darboğazı olası
+ * </pre>
+ *
+ * <h2>Çapraz tablo</h2>
+ * Geç kalmanın iki ayrı sebebi vardır ve genel ortalama ikisini karıştırır:
+ * iş parçacığı geç kaldı (CPU) ya da iş parçacığı zamanında bitti ama GPU kareyi
+ * hazırlayamadı. Bu yüzden swap <b>kare tipine göre ayrı</b> toplanır. Geç karelerde
+ * swap belirgin yüksekse geç kalmanın GPU tarafından açıklandığı <em>ölçülmüş</em> olur.
  */
     private static String swapLine(FramePacingRecorder r) {
         long entries = r.activeSwapEntries();
         if (entries <= 0) {
             return "  swap         ölçülmedi\n";
         }
+        long budget = r.activeBudgetNs();
         long avg = r.activeSwapNsTotal() / entries;
-        long max = r.activeSwapMaxNs();
-        StringBuilder b = new StringBuilder(88);
-        b.append("  swap         ortalama ").append(us(avg))
-                .append("  ·  en kötü ").append(ms(max))
+        StringBuilder b = new StringBuilder(140);
+        b.append("  swap         ortalama ").append(us(avg));
+        if (budget > 0) {
+            b.append("  (bütçenin ").append(percentOf(avg, budget)).append(')');
+        }
+        b.append("  ·  en kötü ").append(ms(r.activeSwapMaxNs()))
                 .append("  ·  ").append(entries).append(" ölçüm");
-        if (max >= 8_000_000L) {
-            b.append("  ·  GPU darboğazı olası");
+        if (budget > 0) {
+            double pct = 100.0 * avg / budget;
+            if (pct < 5.0) {
+                b.append("  ·  GPU etkisiz");
+            } else if (pct > 25.0) {
+                b.append("  ·  GPU darboğazı olası");
+            } else {
+                b.append("  ·  sunum bedeli, darboğaz değil");
+            }
+        }
+        b.append('\n');
+        return b.append(swapCrossTabLine(r, budget)).toString();
+    }
+
+    /**
+     * Swap'ın geç kalma ile çapraz tablosu.
+     *
+     * <p>Oran ve hüküm yalnız iki taraf da doluyken yazılır: tek taraflı veriden
+     * oran çıkarmak uydurma olurdu.
+     *
+     * @param budget hedef kare bütçesi; 0 ise yüzde atlanır
+     */
+    private static String swapCrossTabLine(FramePacingRecorder r, long budget) {
+        long lateN = r.activeSwapLateEntries();
+        long onTimeN = r.activeSwapOnTimeEntries();
+        StringBuilder b = new StringBuilder(128);
+        b.append("               geç karelerde");
+        if (lateN > 0) {
+            long lateAvg = r.activeSwapLateNsTotal() / lateN;
+            b.append(' ').append(us(lateAvg));
+            if (budget > 0) {
+                b.append("  (").append(percentOf(lateAvg, budget)).append(')');
+            }
+            b.append("  ·  ").append(lateN).append(" kare");
         } else {
-            b.append("  ·  GPU yetişiyor");
+            b.append(" yok");
+        }
+        b.append("  ·  zamanında");
+        if (onTimeN > 0) {
+            long onTimeAvg = r.activeSwapOnTimeNsTotal() / onTimeN;
+            b.append(' ').append(us(onTimeAvg));
+            if (budget > 0) {
+                b.append("  (").append(percentOf(onTimeAvg, budget)).append(')');
+            }
+            b.append("  ·  ").append(onTimeN).append(" kare");
+        } else {
+            b.append(" yok");
+        }
+        if (lateN > 0 && onTimeN > 0 && budget > 0) {
+            long lateAvg = r.activeSwapLateNsTotal() / lateN;
+            long onTimeAvg = r.activeSwapOnTimeNsTotal() / onTimeN;
+            // Hüküm yalnız iki taraf da doluyken. Eşikler: oran 2'den büyük VE geç
+            // karelerdeki pay en az %15. İkisi de tutmazsa GPU'yu suçlamak ölçümün
+            // verdiğini aşmak olurdu.
+            if (lateAvg >= 2 * onTimeAvg && 100.0 * lateAvg / budget >= 15.0) {
+                b.append("\n               ↳ GPU geç kareleri açıklıyor");
+            } else {
+                b.append("\n               ↳ geç kalma GPU'dan değil");
+            }
         }
         return b.append('\n').toString();
+    }
+
+    /** {@code value/budget} oranını yüzde olarak yazar; bütçe sıfırsa boş döner. */
+    private static String percentOf(long value, long budget) {
+        if (budget <= 0) {
+            return "";
+        }
+        return percent(100.0 * value / budget);
     }
 
     private static String overshootLine(FramePacingRecorder r) {

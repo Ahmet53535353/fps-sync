@@ -132,6 +132,12 @@ public final class FramePacingRecorder {
         long swapNsTotal;
         long swapEntries;
         long swapMaxNs;
+        long swapLateNsTotal;
+        long swapLateEntries;
+        long swapOnTimeNsTotal;
+        long swapOnTimeEntries;
+        /** Görülen ilk kare bütçesi; swap yüzdesini bu bütçeye göre vermek için. */
+        long budgetNs;
         final int[] frameTime = new int[FRAME_TIME_BUCKETS];
         long latenessMaxNs;
 long parkCalls;
@@ -176,6 +182,11 @@ long parkCalls;
             swapNsTotal = other.swapNsTotal;
             swapEntries = other.swapEntries;
             swapMaxNs = other.swapMaxNs;
+            swapLateNsTotal = other.swapLateNsTotal;
+            swapLateEntries = other.swapLateEntries;
+            swapOnTimeNsTotal = other.swapOnTimeNsTotal;
+            swapOnTimeEntries = other.swapOnTimeEntries;
+            budgetNs = other.budgetNs;
             latenessMaxNs = other.latenessMaxNs;
             parkCalls = other.parkCalls;
             parkNsTotal = other.parkNsTotal;
@@ -211,6 +222,11 @@ long parkCalls;
             swapNsTotal = 0;
             swapEntries = 0;
             swapMaxNs = 0;
+            swapLateNsTotal = 0;
+            swapLateEntries = 0;
+            swapOnTimeNsTotal = 0;
+            swapOnTimeEntries = 0;
+            budgetNs = 0;
             latenessMaxNs = 0;
             parkCalls = 0;
             parkNsTotal = 0;
@@ -417,6 +433,25 @@ long parkCalls;
         r.swapEntries += swapEntries;
         if (swapMaxNs > r.swapMaxNs) {
             r.swapMaxNs = swapMaxNs;
+        }
+        // Çapraz tablo: swap kare tipine göre ayrı toplanır. Genel ortalama, geç
+        // kalmanın CPU'dan mı GPU'dan geldiğini ayırt edemiyordu.
+        //
+        // Eşleştirme bir iterasyon kaymış olabilir: swap, GameRenderer TAIL'inden
+        // SONRA gerçekleşir, yani kare N'in gönderimiyle N'in sunumu farklı
+        // iterasyonlardır. Dağılım için bu bir kayma değil, ortak örnekleme sayılır:
+        // ikisi de aynı döngüde ölçülen "geç kaldı / zamanında" olayıdır.
+        if (swapEntries > 0) {
+            if (lateness > 0) {
+                r.swapLateNsTotal += swapNsTotal;
+                r.swapLateEntries += swapEntries;
+            } else {
+                r.swapOnTimeNsTotal += swapNsTotal;
+                r.swapOnTimeEntries += swapEntries;
+            }
+        }
+        if (r.budgetNs == 0L && budgetNs > 0) {
+            r.budgetNs = budgetNs;
         }
 
         if (parkCalls > 0) {
@@ -761,16 +796,56 @@ long parkCalls;
         return active.swapNsTotal;
     }
 
-    /**
-     * En kötü tek swap süresi.
-     *
-     * <p>GPU darboğazının en güçlü göstergesi: swap kare süresi kadar blokluyorsa
-     * iş parçacığı değil GPU geciktir.
-     *
-     * @return en kötü swap süresi, nanosaniye
-     */
+/**
+ * En kötü tek swap süresi.
+ *
+ * <p>GPU darboğazının en güçlü göstergesi: swap kare süresi kadar blokluyorsa
+ * iş parçacığı değil GPU geciktir.
+ *
+ * @return en kötü swap süresi, nanosaniye
+ */
     public long activeSwapMaxNs() {
         return active.swapMaxNs;
+    }
+
+    /**
+     * Sınırlayıcı beklerken görülen kare bütçesi.
+     *
+     * <p>Swap süresini mutlak mikrosaniye yerine <em>bütçenin yüzdesi</em> olarak
+     * yorumlamak için gerekir: "1,63 ms" zihinsel bölme ister, "%9,8" istemez.
+     *
+     * @return hedef kare bütçesi, nanosaniye; 0 ise henüz belirlenmedi
+     */
+    public long activeBudgetNs() {
+        return active.budgetNs;
+    }
+
+    /**
+     * <b>Geç</b> karelerde ölçülen swap çağrısı sayısı.
+     *
+     * <p>Genel swap ortalaması iki ayrı olayı karıştırır: iş parçacığının geç
+     * kalması ile iş parçacığı zamanında bitip GPU'nun gecikmesi. Kare tipine göre
+     * ayırmak bu ikisini ölçülebilir kılar.
+     *
+     * @return geç karelerdeki swap ölçüm sayısı
+     */
+    public long activeSwapLateEntries() {
+        return active.swapLateEntries;
+    }
+
+    /** @return geç karelerde ölçülen swap süresi toplamı, nanosaniye */
+    public long activeSwapLateNsTotal() {
+        return active.swapLateNsTotal;
+    }
+
+    /** @return hedefi zamanında tutan karelerdeki swap ölçüm sayısı */
+    public long activeSwapOnTimeEntries() {
+        return active.swapOnTimeEntries;
+    }
+
+    /** @return zamanında karelerde ölçülen swap süresi toplamı, nanosaniye */
+    public long activeSwapOnTimeNsTotal() {
+        return active.swapOnTimeNsTotal;
     }
 
     private static double fpsFromFrameTime(long ns) {

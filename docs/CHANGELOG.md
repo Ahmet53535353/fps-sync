@@ -2,6 +2,63 @@
 
 Bu dosya sürüm tarihçesini tutar. Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 
+## 1.5.0 — 2026-10-05
+
+Üretim davranışı **değişmiyor**; yalnız ölçüm ve raporlama. 1.4.0'ın ilk gerçek koşusunun
+raporunu okurken iki hata bulundu: biri benim hatalı eşiğim, biri eski bir bölme hatası.
+
+### Düzeltilen
+
+- **Swap eşiği yanlış yerdeydi ve yanlış alarm üretti.** 1.4.0'ın ilk koşusunda rapor şunu
+  dedi: `swap ortalama 1.629,8 µs · en kötü 12,78 ms · GPU darboğazı olası`. Eşik
+  **en kötü** değere konmuştu ve 12,78 ms onu tetikledi; oysa ortalama 16,67 ms bütçenin
+  **%9,8'i**'ydi. Tek bir aykırı kare tüm sistemik maliyeti gizledi.
+  Artık karar **ortalamaya** bakar ve bütçeyle karşılaştırılır:
+  `< %5` → GPU etkisiz · `%5–25` → sunum bedeli, darboğaz değil · `> %25` → GPU darboğazı
+  olası. En kötü değer hâlâ raporlanır — bilgi kaybı yok, yalnız kararın dayanağı değişti.
+- **Raporda üç bölme hatası.** `parkEarlyCalls`, `waitingFrames` ve `elapsedNs` paydaları
+  sıfır olabiliyordu.
+  - `parkEarlyNsTotal / parkEarlyCalls` korumasız bölüyordu ve **ArithmeticException**
+    atıyordu. Bu bir kenar durum değil: 1.4.0'dan sonra tam olarak beklenen durum, çünkü
+    retry park'ın erken dönüşünü düzeltiyor ve sağlıklı bir koşuda erken dönüş sayısı
+    sıfıra yaklaşıyor.
+  - `lateFrames / waitingFrames` çarpımı double olduğu için **çökmez**, `Infinity` basar.
+    Daha kötü: rapor `Infinity%` yazar ve kullanıcı bunu ölçüm sanar. Sınırlayıcı hiç
+    çalışmadığında (`waitingFrames == 0`) bu olur.
+  - Satırın ikinci koruması savunma amaçlı ve **er işilemez**; testle kanıtlanamıyor.
+    Yanlış güvence izlenimi vermemek için kodda not düşüldü.
+
+### Rapora eklenen
+
+- **Swap bütçe yüzdesiyle yazılıyor.** "1,63 ms" zihinsel bölme ister, "%9,8" istemez.
+  Mutlak mikrosaniye karar vermeye de yetmez: 16,67 ms bütçede 2 ms ciddi, 240 ms bütçede
+  önemsizdir.
+- **Swap × geç kalma çapraz tablosu:**
+  ```
+  swap         ortalama 1630 µs  (bütçenin %9,8)  ·  en kötü 12.78 ms  ·  sunum bedeli, darboğaz değil
+               geç karelerde 4210 µs  (%25,3)  ·  zamanında 1180 µs  (%7,1)
+               ↳ GPU geç kareleri açıklıyor
+  ```
+  Geç kalmanın iki ayrı sebebi vardır ve genel ortalama ikisini karıştırır: iş parçacığı
+  geç kaldı (CPU) ya da iş parçacığı zamanında bitti ama GPU kareyi hazırlayamadı.
+  Swap kare tipine göre ayrı toplanınca bu **ayırt edilebilir** olur. Hüküm yalnız iki
+  taraf da doluyken ve oran 2'den büyükken **ve** geç karelerdeki pay en az %15 iken
+  verilir — aksi halde ölçümün verdiğini aşmak olurdu.
+
+### Bilinen sınır
+
+Çapraz tablo bir **iterasyon** kayması taşır: swap, `GameRenderer` TAIL'inden sonra
+gerçekleştiği için kare N'in gönderimiyle N'in sunumu farklı iterasyonlardır. Dağılım
+için bu bir kayma değildir — ikisi de aynı döngüde ölçülen "geç kaldı / zamanında"
+olayıdır — ama tek bir kare için neden-sonuç iddiası kurulamaz.
+
+### Doğrulama
+
+**226 test**, build + javadoc yeşil, **11 mutasyon kanıtlandı** (bölme korumaları, iki
+eşik, çapraz tablo tarafı, tek taraflı veri, sayaç toplama, bütçe saklama).
+Kaçmayan tek mutasyon `elapsedNs` korumasının kaldırılmasıydı: o koruma erişilemez
+olduğu için kanıtlanamaz, kodda bunun yerine not var.
+
 ## 1.4.0 — 2026-10-04
 
 1.3.0'ın park tekrarı işe yaramadı: kare başına park çağrısı 1,21'de kaldı, yani

@@ -190,19 +190,47 @@ class SwapTimeTest {
     void reportPrintsSwapLine() {
         FramePacingRecorder r = new FramePacingRecorder();
         for (int i = 0; i < 600; i++) {
+            // Kare başına doğru değerler: 1 ölçüm, ortalama 200 µs (%1,2).
+            // ESKİ HALE bu satır 8_000_000/600/15_000_000 yazıyordu; bunlar kare
+            // başına geçtiği için ortalama 13,3 µs'e düşüyor ve anlamsız oluyordu.
+            // Yeni yüzde mantığı bu gizli hatayı açığa çıkardı.
             r.recordFrame(BUDGET_NS, BUDGET_NS, true, 1, BUDGET_NS - 100_000L,
-                    96_000, 4_400, 0L, 0L, 0L, 0, 0, 0L, 8_000_000L, 600, 15_000_000L);
+                    96_000, 4_400, 0L, 0L, 0L, 0, 0, 0L, 200_000L, 1, 200_000L);
         }
 
         String text = FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", true, 0));
 
         assertTrue(text.contains("swap"),
                 "rapor swap satırını yazmalı, alınan:\n" + text);
-        assertTrue(text.contains("15.00 ms"),
-                "en kötü swap süresi görünmeli, alınan:\n" + text);
-        assertTrue(text.contains("GPU darboğazı olası"),
-                "15 ms'lik swap kare süresi kadar blokluyor, darboğaz denmeli:\n" + text);
+        assertTrue(text.contains("200.0 µs"),
+                "ortalama swap görünmeli, alınan:\n" + text);
+        assertTrue(text.contains("1.2%"),
+                "ortalama bütçe yüzdesi görünmeli, alınan:\n" + text);
+    }
+
+    @Test
+    @DisplayName("TEK yüksek kare ortalamayı bozmaz — düzeltilen yanlış alarm")
+    void oneBadFrameDoesNotRaiseBottleneck() {
+        // 1.4.0'ın ilk koşusunda olan tam olarak bu: ortalama %9,8, en kötü %76,7.
+        // Eşik en kötüye bakıyordu ve "GPU darboğazı olası" dedi. Ortalama %10 ise
+        // sunum bedelidir, darboğaz değil.
+        FramePacingRecorder r = new FramePacingRecorder();
+        for (int i = 0; i < 600; i++) {
+            boolean outlier = (i == 7);
+            r.recordFrame(BUDGET_NS, BUDGET_NS, true, 1, BUDGET_NS - 100_000L,
+                    96_000, 4_400, 0L, 0L, 0L, 0, 0, 0L,
+                    outlier ? 12_780_000L : 1_500_000L, 1,
+                    outlier ? 12_780_000L : 1_500_000L);
+        }
+
+        String text = FpsSyncStatusReport.render(
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", true, 0));
+
+        assertTrue(text.contains("12.78 ms"),
+                "en kötü yine de görünmeli — bilgi kaybı yok, alınan:\n" + text);
+        assertTrue(text.contains("darboğaz değil"),
+                "ortalama %10 ise darboğaz denmemeli, alınan:\n" + text);
     }
 
     @Test
@@ -223,8 +251,8 @@ class SwapTimeTest {
     }
 
     @Test
-    @DisplayName("küçük swap süresi 'GPU yetişiyor' der")
-    void fastSwapSaysGpuKeepsUp() {
+    @DisplayName("küçük swap süresi 'GPU etkisiz' der")
+    void fastSwapSaysGpuIrrelevant() {
         FramePacingRecorder r = new FramePacingRecorder();
         for (int i = 0; i < 600; i++) {
             r.recordFrame(BUDGET_NS, BUDGET_NS, true, 1, BUDGET_NS - 100_000L,
@@ -234,7 +262,7 @@ class SwapTimeTest {
         String text = FpsSyncStatusReport.render(
                 new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", true, 0));
 
-        assertTrue(text.contains("GPU yetişiyor"),
-                "200 µs'lik swap darboğaz değildir, alınan:\n" + text);
+        assertTrue(text.contains("GPU etkisiz"),
+                "200 µs'lik swap bütçenin %1'i, darboğaz değildir, alınan:\n" + text);
     }
 }
