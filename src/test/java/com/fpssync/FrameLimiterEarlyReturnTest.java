@@ -38,6 +38,10 @@ class FrameLimiterEarlyReturnTest {
         long[] clock = {startNs};
 
         limiter.reset();
+        // Park aşımı artık kareler boyunca TOPLANIR (birden çok park çağrısı olabilir).
+        // Üretimde her kare sonunda recordFrameTiming() sıfırlar; testte de sıfırlamak
+        // gerekir, yoksa önceki testten kalan değer devralınır.
+        limiter.resetFrameStats();
         limiter.nanoTime = () -> clock[0];
         limiter.sleeper = ns -> clock[0] += ns + parkAdjustmentNs;
         // Kanca sanal saati deadline'a taşır: aksi hâlde spin döngüsü hiç çıkmaz.
@@ -55,14 +59,17 @@ class FrameLimiterEarlyReturnTest {
     @Test
     @DisplayName("park erken dönerse aşım negatif olarak taşınır")
     void earlyReturnIsReportedAsNegative() {
-        FrameLimiter limiter = runFrame(-EARLY_NS);
+          FrameLimiter limiter = runFrame(-EARLY_NS);
 
-        assertEquals(1, limiter.parkCallsLastFrame, "park çağrısı yapılmalı");
-        assertEquals(-EARLY_NS, limiter.parkOvershootNsLastFrame,
-                "erken dönüş işaretli taşınmalı, 0'a yassılanıyordu");
-    }
+          // Artık birden çok park çağrısı yapılabilir: kalan süre kapanana kadar tekrar
+          // denenir. Önemli olan aşımın negatif olması ve her çağrı için birikmesi.
+          assertTrue(limiter.parkCallsLastFrame >= 1, "park çağrısı yapılmalı");
+          assertEquals(-EARLY_NS * limiter.parkCallsLastFrame,
+                  limiter.parkOvershootNsLastFrame,
+                  "her park çağrısının erken dönüşü toplanmalı");
+      }
 
-    @Test
+          @Test
     @DisplayName("park geç dönerse aşım pozitif kalır")
     void lateReturnStaysPositive() {
         FrameLimiter limiter = runFrame(LATE_NS);
@@ -74,19 +81,21 @@ class FrameLimiterEarlyReturnTest {
     @Test
     @DisplayName("ölçüm zinciri erken dönüşü kayıtçıya ulaştırır")
     void earlyReturnReachesTheRecorder() {
-        FrameLimiter limiter = runFrame(-EARLY_NS);
-        FramePacingRecorder recorder = new FramePacingRecorder();
+          FrameLimiter limiter = runFrame(-EARLY_NS);
+          FramePacingRecorder recorder = new FramePacingRecorder();
 
-        recorder.recordFrame(16_666_667L, 16_666_667L, true,
-                limiter.parkCallsLastFrame, limiter.parkRequestedNsLastFrame,
-                limiter.parkOvershootNsLastFrame, limiter.spinNsLastFrame);
+          recorder.recordFrame(16_666_667L, 16_666_667L, true,
+                  limiter.parkCallsLastFrame, limiter.parkRequestedNsLastFrame,
+                  limiter.parkOvershootNsLastFrame, limiter.spinNsLastFrame);
 
-        assertEquals(1, recorder.activeParkEarlyCalls(),
-                "erken dönüş kayıtçıya ulaşmalı");
-        assertEquals(EARLY_NS, recorder.activeParkEarlyNsTotal());
-    }
+          assertEquals(1, recorder.activeParkEarlyCalls(),
+                  "kare başına bir erken dönüş kaydedilir");
+          assertEquals(EARLY_NS * limiter.parkCallsLastFrame,
+                  recorder.activeParkEarlyNsTotal(),
+                  "birden çok park çağrısının erken dönüşü toplanmalı");
+      }
 
-    @Test
+          @Test
     @DisplayName("sıfırlama erken dönüş sayacını da temizler")
     void resetClearsEarlyReturnCounters() {
         FrameLimiter limiter = runFrame(-EARLY_NS);

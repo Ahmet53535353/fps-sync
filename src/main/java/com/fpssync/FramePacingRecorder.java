@@ -88,8 +88,21 @@ public final class FramePacingRecorder {
      */
     public static final long EARLY_WINDOW_NS = 600_000_000_000L;
 
+    /**
+     * Erken dönen park çağrılarının uyuma süresi için üst sınır: 64 ms.
+     *
+     * <p>Düzgün çağrılar bu dağılıma girmez; yalnızca istenenden erken dönenler.
+     * Toplam park süresi iki popülasyonu karıştırdığı için ayrı ölçülür.
+     */
+    public static final long EARLY_SLEEP_MAX_NS = 64_000_000L;
+
+    /** Erken uyku kovasının genişliği: 10 µs. */
+    public static final long EARLY_SLEEP_STEP_NS = 10_000L;
+
     static final int PARK_ELAPSED_BUCKETS =
             (int) (PARK_ELAPSED_MAX_NS / PARK_ELAPSED_STEP_NS) + 1;
+    static final int EARLY_SLEEP_BUCKETS =
+            (int) (EARLY_SLEEP_MAX_NS / EARLY_SLEEP_STEP_NS) + 1;
 
     /** Bir rejimin tüm sayacı ve histogramı. */
     private static final class Regime {
@@ -107,6 +120,8 @@ public final class FramePacingRecorder {
         long parkEarlyNsTotal;
         long parkElapsedCalls;
         long parkElapsedOverflow;
+        long earlySleepCalls;
+        long earlySleepOverflow;
         long interruptFlagFrames;
         long interruptsCaught;
         long spinNsTotal;
@@ -114,6 +129,7 @@ public final class FramePacingRecorder {
         final int[] lateness = new int[LATE_BUCKETS];
         final int[] overshoot = new int[OVERSHOOT_BUCKETS];
         final int[] parkElapsed = new int[PARK_ELAPSED_BUCKETS];
+        final int[] earlySleep = new int[EARLY_SLEEP_BUCKETS];
 
         /**
          * Başka bir rejimin değerlerini alır.
@@ -138,6 +154,8 @@ public final class FramePacingRecorder {
             parkEarlyNsTotal = other.parkEarlyNsTotal;
             parkElapsedCalls = other.parkElapsedCalls;
             parkElapsedOverflow = other.parkElapsedOverflow;
+            earlySleepCalls = other.earlySleepCalls;
+            earlySleepOverflow = other.earlySleepOverflow;
             interruptFlagFrames = other.interruptFlagFrames;
             interruptsCaught = other.interruptsCaught;
             spinNsTotal = other.spinNsTotal;
@@ -145,6 +163,7 @@ public final class FramePacingRecorder {
             System.arraycopy(other.lateness, 0, lateness, 0, LATE_BUCKETS);
             System.arraycopy(other.overshoot, 0, overshoot, 0, OVERSHOOT_BUCKETS);
             System.arraycopy(other.parkElapsed, 0, parkElapsed, 0, PARK_ELAPSED_BUCKETS);
+            System.arraycopy(other.earlySleep, 0, earlySleep, 0, EARLY_SLEEP_BUCKETS);
         }
 
         void clear() {
@@ -162,6 +181,8 @@ public final class FramePacingRecorder {
             parkEarlyNsTotal = 0;
             parkElapsedCalls = 0;
             parkElapsedOverflow = 0;
+            earlySleepCalls = 0;
+            earlySleepOverflow = 0;
             interruptFlagFrames = 0;
             interruptsCaught = 0;
             spinNsTotal = 0;
@@ -169,6 +190,7 @@ public final class FramePacingRecorder {
             java.util.Arrays.fill(lateness, 0);
             java.util.Arrays.fill(overshoot, 0);
             java.util.Arrays.fill(parkElapsed, 0);
+            java.util.Arrays.fill(earlySleep, 0);
         }
     }
 
@@ -295,6 +317,16 @@ public final class FramePacingRecorder {
                 // 100 µs'luk pencerenin çok üstüne çıktığı görünmüyordu.
                 r.parkEarlyCalls++;
                 r.parkEarlyNsTotal += -overshootNs;
+                // Erken dönenler ne kadar uyuyabildi? Ayrı dağılım: toplam park
+                // süresi düzgün ve erken çağrıları birlikte özetliyor.
+                if (parkElapsedNs > 0) {
+                    r.earlySleepCalls++;
+                    if (parkElapsedNs < EARLY_SLEEP_MAX_NS) {
+                        r.earlySleep[(int) (parkElapsedNs / EARLY_SLEEP_STEP_NS)]++;
+                    } else {
+                        r.earlySleepOverflow++;
+                    }
+                }
             } else if (overshootNs > 0) {
                 r.overshootLateCalls++;
                 if (overshootNs > r.overshootMaxNs) {
@@ -642,6 +674,59 @@ public long activeOvershootMaxNs() {
        *
        * @return aşımı olan park çağrısı sayısı
        */
+      /**
+       * Park anında interrupt bayrağı set olan kare sayısı.
+       *
+       * <p>Teşhis. Sıfırdan büyükse park'ın bazen uyumadan dönmesinin interrupt
+       * kaynaklı olma olasılığı güçlenir: {@code LockSupport.parkNanos} interrupt
+       * durumu set ise anında döner.
+       *
+       * @return bayrak set olduğu kare sayısı
+       */
+      /**
+       * Erken dönen park çağrılarının gerçekte uyuduğu sürenin medyanı.
+       *
+       * <p>Toplam park süresi iki popülasyonu karıştırır: düzgün çağrılar isteneni
+       * tam uyur, erken dönenler istenenin onda birini. Karışık ortalama hangi
+       * popülasyonun baskın olduğunu göstermez; bu yüzden erken dönenler ayrı
+       * histogramlanır.
+       *
+       * <p>Park tekrarının kaç deneme yapması gerektiğini bu dağılım belirler.
+       *
+       * @return nanosaniye; erken dönüş yoksa 0
+       */
+      public long activeEarlySleepMedianNs() {
+          return percentile(active.earlySleep, active.earlySleepCalls, EARLY_SLEEP_STEP_NS, 0.50);
+      }
+
+      /**
+       * Erken dönen park çağrılarının uyuma süresinin istenen yüzdeliği.
+       *
+       * @param q istenen yüzdelik, 0–1 arası
+       * @return nanosaniye; ölçülemiyorsa {@link #SATURATED}
+       */
+      public long activeEarlySleepPercentileNs(double q) {
+          return percentile(active.earlySleep, active.earlySleepCalls, EARLY_SLEEP_STEP_NS, q);
+      }
+
+      /**
+       * Erken uyku süresi kaydedilen çağrı sayısı.
+       *
+       * @return kayıt sayısı
+       */
+      public long activeEarlySleepCalls() {
+          return active.earlySleepCalls;
+      }
+
+      /**
+       * Erken uyku histogramının üst sınırını aşan çağrı sayısı.
+       *
+       * @return taşan çağrı sayısı
+       */
+      public long activeEarlySleepOverflow() {
+          return active.earlySleepOverflow;
+      }
+
       /**
        * Park anında interrupt bayrağı set olan kare sayısı.
        *

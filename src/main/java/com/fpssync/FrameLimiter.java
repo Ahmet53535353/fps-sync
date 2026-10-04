@@ -189,6 +189,31 @@ public class FrameLimiter {
      * tamamı her karede kullanılmaz — aşım büyükse döngü hiç çalışmaz.
      */
     private static final long SPIN_WINDOW_NS = 100_000L;
+    /**
+     * Bir karede en fazla bu kadar park çağrısı yapılır.
+     *
+     * <p><b>Güvenlik ağıdır, ayar değil.</b> Asıl mekanizma "park ilerleme yaptı mı"
+     * kontrolüdür; bu üst sınır yalnızca o kontrolün yetmediği patolojik durumlar
+     * içindir. Rapor kare başına ortalama park çağrısını yazdığı için ağa ne zaman
+     * takıldığımız ölçülür — kovalamaya gerek kalmaz.
+     */
+    private static final int MAX_PARK_CALLS_PER_FRAME = 32;
+    /**
+     * Bir park çağrısının CPU maliyeti: ~45 µs.
+     *
+     * <p>Ölçülen değer, çevrimdışı ({@code FrameLimiterCpuProbe}): 1 ms'de 24 µs,
+     * 5 ms'de 45 µs, 15 ms'de 51 µs, 50 ms'de 53 µs. Süreye büyük ölçüde bağlı değil,
+     * sabit bir gider — çekirdekten çıkmak ve futex'e girmek.
+     */
+    private static final long PARK_CPU_COST_NS = 45_000L;
+
+    /**
+     * Bir park çağrısının en az vermesi gereken süre.
+     *
+     * <p>Değer {@link #PARK_CPU_COST_NS}: bir çağrının CPU maliyeti kadar. Daha az
+     * süre uyuyan çağrı, spin ile geçirilecek süreden daha pahalıdır.
+     */
+    private static final long PARK_MIN_WORTH_NS = PARK_CPU_COST_NS;
 
     private long lastFrameTime = 0;
     private boolean fpsSyncEnabled = false;
@@ -331,55 +356,79 @@ public class FrameLimiter {
 
         if (now >= nextFrameTime) { lastFrameTime = now; return; }
 
-        long remaining = nextFrameTime - now;
-
-        // Büyük kısımı uyu; yalnızca son 0.1 ms'yi spin ile tamamla.
         // Buraya gelmek demek sınırlayıcının bu karede gerçekten beklediğidir.
         waitedLastFrame = 1;
 
-        long sleepNs = remaining - SPIN_WINDOW_NS;
-        if (sleepNs > 0) {
-            parkCallsLastFrame = 1;
+        // Park'a tek başına güvenilmez; güvenmeyelim.
+        //
+        // 2026-10-02'de park karelerin yarısında istenenden 7,69 ms ERKEN döndü ve
+        // kalan sürenin tamamı Thread.onSpinWait() ile yanıldı: kare başına 4.330 µs
+        // CPU, bir çekirdeğin %18'i. Kare süresi doğruydu (park + spin sabit), yalnız
+        // beklemenin maliyeti yüksekti.
+        //
+        // Çözüm: kalan süre spin penceresinin üstünde olduğu sürece park TEKRAR
+        // denenir, yalnız son pencere spin ile kapanır. Böylece park'ın neden erken
+        // döndüğünü bilmeye gerek kalmaz — erken de döne, zamanında da döne, geç de
+        // döne, üçünde de kalan süre kapanır.
+        //
+        // NanoTime maliyeti: ilk turun `before`u zaten girişte okunmuş `now`dur,
+        // sonraki turlar bir önceki turun sonucu. İlk denemede ek okuma yoktur.
+        long before = now;
+        while (true) {
+            long left = nextFrameTime - before;
+            if (left <= SPIN_WINDOW_NS) {
+                break;
+            }
+            long sleepNs = left - SPIN_WINDOW_NS;
+            parkCallsLastFrame++;
             parkRequestedNsLastFrame += sleepNs;
+
             // Teşhis: park anında kesinti bayrağı set mi? Okunur, TEMİZLENMEZ.
             // Temizlemek oyun iş parçacığının davranışını değiştirirdi; burada yalnız
-            // ölçülüyor. LockSupport.parkNanos interrupt durumu set ise anında döner ve
-            // kalan süre spin ile yakılır — 2026-10-02'de üç koşuda da park ikiye
-            // bölünmüştü ve p05 sıfırdı.
+            // ölçülüyor. (2026-10-02'de bu bayrağın hiç set olmadığı görüldü, yani
+            // erken dönüşün sebebi başka.)
             if (Thread.currentThread().isInterrupted()) {
                 interruptFlagSetFrames = 1;
             }
-            try {
-                  // Nanosaniye değeri doğrudan korunur. Thread.sleep(ms) kullanılsaydı
-                  // kırpma 0.1 ms'lik spin penceresini yutardı: kalan süre 1.1 ms'nin
-                  // altına düşünce uyku hiç yapılmaz ve kalan sürenin tamamı spin
-                  // edilirdi.
-                  //
-                  // Aşımın ne kadar olduğu BURADA ölçülmez; oynanışta ölçülür. Daha önce
-                  // buraya "parkNanos aşımı bu makinede ~90 µs" yazılmıştı. Bu sayı
-                  // boş bir JVM'de alınmıştı ve oyun içinde yanlış çıktı: 2026-10-02
-                  // koşusunda medyan 1 ms'in üstünde, en kötü 35.8 ms. Bir koşulda
-                  // ölçülen sayıyı başka koşula taşımak, tahmini ölçüm gibi sunmak
-                  // demektir.
-                  sleeper.park(sleepNs);
-              } catch (InterruptedException e) {
-                  interruptsCaught++;
-                  Thread.currentThread().interrupt();
-              }
-          }
 
-          // `spinStart` park'tan hemen sonra okunduğu için park aşımı ek bir
-          // nanoTime çağrısı olmadan hesaplanır: uyanma anı zaten elimizde.
-          long spinStart = nanoTime.getAsLong();
-          if (sleepNs > 0) {
-              // İşaretli saklanır: pozitif = geç döndü, negatif = erken döndü.
-              // Erken dönüş daha önce 0'a yassılanıyordu; oysa kalan süre spin ile
-              // yakıldığı için erken dönüş miktarı doğrudan spin süresini açıklar.
-              parkOvershootNsLastFrame = spinStart - now - sleepNs;
-              // Gerçek uyunan süre. İstenen süreden kısa ise park beklemedi demektir;
-              // aşımın dağılımı bu bilgiyi doğrudan vermediği için ayrıca ölçülür.
-              parkElapsedNsLastFrame = spinStart - now;
-          }
+            try {
+                // Nanosaniye değeri doğrudan korunur. Thread.sleep(ms) kullanılsaydı
+                // kırpma 0.1 ms'lik spin penceresini yutardı.
+                sleeper.park(sleepNs);
+            } catch (InterruptedException e) {
+                interruptsCaught++;
+                Thread.currentThread().interrupt();
+            }
+
+            long after = nanoTime.getAsLong();
+            long elapsed = after - before;
+            parkElapsedNsLastFrame += elapsed;
+            // İşaretli toplam: pozitif = geç döndü, negatif = erken döndü.
+            parkOvershootNsLastFrame += elapsed - sleepNs;
+            before = after;
+
+            // Fayda koruması: bir park çağrısı kendi CPU maliyetinden az süre
+            // veriyorsa denemeye değmez. Park çağrısı süreden bağımsız olarak ~45 µs
+            // CPU harcar (sabit syscall gideri, çevrimdışı koprobe); daha az uyuyan bir
+            // çağrı, spin ile geçirilecek süreden daha pahalıdır.
+            //
+            // Eşiğin ORAN olması yanlış olurdu: gerçek koşuda park istenenin yalnızca
+            // %12'sini uyuyor ve o tam olarak düzeltilmesi gereken durum. Mutlak eşik
+            // hem %12'yi hem de hiç uyuyan park'ı doğru şekilde ayırır.
+            if (elapsed < PARK_MIN_WORTH_NS) {
+                break;
+            }
+            // Güvenlik ağı: yukarıdaki koruma her koşulda yakalamayabilir — park
+            // sabit ve küçük bir süre veriyorsa (ör. hep 200 µs) her deneme faydalı
+            // görünür ama kalan süreyi kapatacak kadar ilerlemez. Bu bir ayar değil,
+            // sonsuz döngüye karşı son savunmadır; rapordaki "kare başına park çağrısı"
+            // bu ağa ne zaman takıldığımızı gösterir.
+            if (parkCallsLastFrame >= MAX_PARK_CALLS_PER_FRAME) {
+                break;
+            }
+        }
+
+        long spinStart = before;
         Runnable hook = spinHook;
         if (hook == NO_SPIN_HOOK) {
             while (nanoTime.getAsLong() < nextFrameTime) {

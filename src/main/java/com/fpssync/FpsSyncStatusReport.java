@@ -87,7 +87,10 @@ public final class FpsSyncStatusReport {
             if (r.activeParkCalls() > 0) {
                 b.append("  park        ").append(r.activeParkCalls())
                         .append(" çağrı · istenen ortalama ")
-                        .append(ms(r.activeParkNsTotal() / r.activeParkCalls())).append('\n');
+                        .append(ms(r.activeParkNsTotal() / r.activeParkCalls()))
+                        .append(" · kare başına ")
+                        .append(num((double) r.activeParkCalls() / r.activeFrames(), 2))
+                        .append('\n');
                 b.append("  park gerçek ").append(parkElapsedLine(r)).append('\n');
                 b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
                 appendInterruptLine(b, r);
@@ -106,7 +109,8 @@ public final class FpsSyncStatusReport {
                     b.append("  park erken  ").append(r.activeParkEarlyCalls())
                             .append(" çağrı · ortalama ")
                             .append(ms(r.activeParkEarlyNsTotal() / r.activeParkEarlyCalls()))
-                            .append(" erken döndü (kalanı spin ile yakıldı)\n");
+                            .append(" erken döndü\n");
+                    b.append("  erken uyku  ").append(earlySleepLine(r)).append('\n');
                 }
             }
             if (r.activeSpinEntries() > 0) {
@@ -247,6 +251,28 @@ b.append("\nÖZET\n");
      *
      * <p>Sayaçlar sıfır çıkarsa varsayım yanlıştır ve park-tekrarı tek başına yeter.
      */
+    /**
+     * Erken dönen park çağrılarının gerçekte uyuduğu sürenin dağılımı.
+     *
+     * <p>Toplam park süresi iki popülasyonu karıştırıyor: düzgün çağrılar isteneni
+     * tam uyuyor, erken dönenler istenenin %12–30'unu. Karışık ortalama hangisinin
+     * baskın olduğunu göstermiyor; park tekrarının kaç deneme yapması gerektiği de
+     * bu dağılımdan çıkar.
+     */
+    private static String earlySleepLine(FramePacingRecorder r) {
+        if (r.activeEarlySleepCalls() == 0) {
+            return "ölçülmedi";
+        }
+        StringBuilder b = new StringBuilder(72);
+        b.append("medyan ").append(value(r.activeEarlySleepMedianNs()))
+                .append(" · p05 ").append(value(r.activeEarlySleepPercentileNs(0.05)))
+                .append(" · p95 ").append(value(r.activeEarlySleepPercentileNs(0.95)));
+        if (r.activeEarlySleepOverflow() > 0) {
+            b.append(" · tavan dışı ").append(r.activeEarlySleepOverflow());
+        }
+        return b.toString();
+    }
+
     private static void appendInterruptLine(StringBuilder b, FramePacingRecorder r) {
         long flagged = r.interruptFlagFrames();
         long caught = r.interruptsCaught();
