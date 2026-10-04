@@ -255,6 +255,30 @@ public class FrameLimiter {
       int interruptFlagSetFrames;
       /** Bu karede yakalanan {@link InterruptedException} sayısı. */
       int interruptsCaught;
+    /**
+     * Bu karede fayda korumasının devreye girdiği sayı: yani bir park çağrısı kendi
+     * CPU maliyetinden ({@link #PARK_CPU_COST_NS}) az uyudu ve buna rağmen <em>bir kez
+     * daha</em> denendi.
+     *
+     * <p><b>Neden bir kez daha.</b> Gerçek dağılım iki modludur:
+     * <pre>
+     * erken uyku  medyan 0,0 µs · p05 0,0 µs · p95 6.740 µs
+     * </pre>
+     * Karelerin yarısı hiç uyumadan dönüyor, bir kısmı 6,7 ms'ye kadar uyuyor. Kural
+     * her çağrıyı tek başına değerlendirip 0 µs popülasyonunu gördüğünde o karedeki
+     * 6,7 ms'lik kuyruğu da reddediyordu. Beklenen değer 0,05 × 6.740 ≈ 337 µs
+     * kazanç karşılığında 45 µs gider — yani tekrar katlanarak pozitif.
+     */
+    int retryAfterFailCalls;
+    /**
+     * {@link #retryAfterFailCalls} içinden, <b>tekrarın gerçekten uyuduğu</b> olanlar.
+     *
+     * <p>Karar sayısı budur: {@code retryAfterFailSleptCalls / retryAfterFailCalls}
+     * oranı düşükse bu değişiklik geri alınır. Oran yüksekse kalsın demektir.
+     */
+    int retryAfterFailSleptCalls;
+    /** Tekrar denemelerin toplam uyuma süresi; kazanılan sürenin doğrudan ölçümü. */
+    long retryAfterFailSleptNs;
     /** Bu karede harcanan spin süresi. */
     long spinNsLastFrame;
     /** Beklemeden önceki kare için hedef bütçe; 0 ise sınırlayıcı kapalıydı. */
@@ -282,6 +306,9 @@ public class FrameLimiter {
         parkElapsedNsLastFrame = 0;
         interruptFlagSetFrames = 0;
         interruptsCaught = 0;
+        retryAfterFailCalls = 0;
+        retryAfterFailSleptCalls = 0;
+        retryAfterFailSleptNs = 0;
         spinNsLastFrame = 0;
         frameBudgetNsLastFrame = 0;
         nanoTimeLastFrame = 0;
@@ -373,7 +400,14 @@ public class FrameLimiter {
         //
         // NanoTime maliyeti: ilk turun `before`u zaten girişte okunmuş `now`dur,
         // sonraki turlar bir önceki turun sonucu. İlk denemede ek okuma yoktur.
+        //
+        // 1.3.0'ın eklediği fayda koruması "başarısız çağrıdan sonra koşulsuz kır"
+        // diyordu ve gerçek koşuda işe yaramadı: kare başına park çağrısı 1,21'de
+        // kaldı, yani koruma çoğu karede o karedeki 6,7 ms'lik kuyruğu görmeden
+        // vazgeçti. Aşağıdaki kural onu bir kez daha denemeye çevirir ve sonucu
+        // sayar; karar o sayılara bakar.
         long before = now;
+        boolean retriedAfterFail = false;
         while (true) {
             long left = nextFrameTime - before;
             if (left <= SPIN_WINDOW_NS) {
@@ -407,22 +441,31 @@ public class FrameLimiter {
             parkOvershootNsLastFrame += elapsed - sleepNs;
             before = after;
 
-            // Fayda koruması: bir park çağrısı kendi CPU maliyetinden az süre
-            // veriyorsa denemeye değmez. Park çağrısı süreden bağımsız olarak ~45 µs
-            // CPU harcar (sabit syscall gideri, çevrimdışı koprobe); daha az uyuyan bir
-            // çağrı, spin ile geçirilecek süreden daha pahalıdır.
+            // Başarısız bir çağrıdan sonra TAM OLARAK BİR KEZ daha dene.
             //
-            // Eşiğin ORAN olması yanlış olurdu: gerçek koşuda park istenenin yalnızca
-            // %12'sini uyuyor ve o tam olarak düzeltilmesi gereken durum. Mutlak eşik
-            // hem %12'yi hem de hiç uyuyan park'ı doğru şekilde ayırır.
+            // 1.3.0 burada koşulsuz kırıyordu ve yanlış bir varsayıma dayanıyordu:
+            // "bu çağrı uyumadı" demek "sonraki de uyumayacak" demek değildir. Gerçek
+            // dağılım iki modludur (medyan 0 µs, p95 6.740 µs), yani bir sonraki çağrı
+            // 6,7 ms uyuyabilir. Ek gider 45 µs, beklenen kazanç ~337 µs.
+            //
+            // İki koşulda vazgeçilir: (a) zaten bir kez denendi, (b) istenen süre
+            // zaten 45 µs'un altında — o zaman hiçbir çağrı faydalı olamaz, kuyruğun
+            // sonundaki bu çağrılar sayacı boşa kirletmesin.
+            //
+            // Döngüden çıkarken kalan süre spin'e eklenir; kare süresi değişmez.
             if (elapsed < PARK_MIN_WORTH_NS) {
-                break;
+                if (retriedAfterFail || sleepNs < PARK_MIN_WORTH_NS) {
+                    break;
+                }
+                retriedAfterFail = true;
+                retryAfterFailCalls++;
+                continue;
             }
-            // Güvenlik ağı: yukarıdaki koruma her koşulda yakalamayabilir — park
-            // sabit ve küçük bir süre veriyorsa (ör. hep 200 µs) her deneme faydalı
-            // görünür ama kalan süreyi kapatacak kadar ilerlemez. Bu bir ayar değil,
-            // sonsuz döngüye karşı son savunmadır; rapordaki "kare başına park çağrısı"
-            // bu ağa ne zaman takıldığımızı gösterir.
+            // Başarısız denemeden sonraki bu çağrı işe yaradı: faydayı kaydet.
+            if (retriedAfterFail) {
+                retryAfterFailSleptCalls++;
+                retryAfterFailSleptNs += elapsed;
+            }
             if (parkCallsLastFrame >= MAX_PARK_CALLS_PER_FRAME) {
                 break;
             }

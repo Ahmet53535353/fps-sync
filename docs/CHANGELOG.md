@@ -2,6 +2,73 @@
 
 Bu dosya sürüm tarihçesini tutar. Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 
+## 1.4.0 — 2026-10-04
+
+1.3.0'ın park tekrarı işe yaramadı: kare başına park çağrısı 1,21'de kaldı, yani
+döngü çoğu karede o karedeki uzun uykuyu hiç görmeden vazgeçti. Bu sürüm o yanlış
+kararı düzeltir ve park'ın erken dönüşünün iki modlu olduğunu rapora koyar. Ayrıca iki
+ölçüm eksikti: pürüzsüzlük şiddeti ve geç kalmanın CPU'dan mı GPU'dan geldiği.
+
+### Düzeltilen
+
+- **Fayda koruması artık bir çağrıyı tek başına yargılamıyor.** 1.3.0 şu kuralı
+  koyuyordu: "bir park çağrısı 45 µs'tan az uyuduysa tekrar deneme, spin'e düş."
+  Gerçek dağılım tek değil, **iki modlu**:
+  `erken uyku medyan 0,0 µs · p05 0,0 µs · p95 6.740 µs`. Karelerin yarısı hiç uyumadan
+  dönüyor, bir kısmı 6,7 ms'ye kadar uyuyor. Kural ikinci popülasyonu hiç görmediği
+  için o karelerdeki 6,7 ms'lik fırsatı da reddetti.
+  Artık bir başarısız çağrıdan sonra **tam bir kez daha** denenir, sonra kare kapanır.
+  - Beklenen değer hesabı: gider `45 µs`, kazanç `0,05 × 6.740 ≈ 337 µs`. Yani başına
+    45 µs harcamaya ~337 µs kazanç — guard'ın reddettiği her karede katlanarak pozitif.
+  - İki koşulda vazgeçilir: zaten bir kez denendiyse, ya da istenen süre zaten 45 µs'un
+    altındaysa (kuyruğun sonundaki çağrılar sayacı boşa kirletmesin).
+  - Kare süresi **değişmez**: `park + spin` toplamı sabit, ek gider yalnızca CPU.
+
+### Rapora eklenen
+
+- `başarısız park tekrarı X/Y faydalı (… %) · ortalama … kazanç · 45 µs gideri aşıyor`
+  — bu satır tek başına **karar verdirir**: oran %3'ün üstündeyse kural kalır, %1'in
+  altındaysa geri alınır. Tahmin değil, ölçüm.
+- `1% low … · 0.1% low … (p99 … · p99.9 …)` — endüstrinin standart pürüzsüzlük ölçütü.
+  `geç kare %` bir *sayı* veriyor, *şiddet* vermiyordu: 1 ms'lik tırtıklama ile 40 ms'lik
+  duraklama aynı sayıda geç karedir.
+  - Bunun için **kare süresi histogramı** eklendi. Mevcut gecikme histogramı yalnız
+    *geç* kareleri tutar, zamanında kalanlar hiç girmez; 1% low kare süresinin tüm
+    dağılımına bakar, yani mevcut histogramdan **türetilemez**.
+  - Yüzdelikler kova **orta noktası** ile hesaplanır. Mevcut `percentile()` kova alt
+    sınırını döndürür; gecikme için bu bir tercihtir ("ölçemedim" ile "tam bu değer"
+    ayrımını silmemek için) ama kare süresinden FPS türetilir ve alt sınır süreyi eksik
+    saydığı için FPS'i **gerçekten yüksek** gösterirdi.
+  - Bilinen sınır: `q=0,999` rank `ceil(0,999·N)`'dir. Az örnekli bir oturumda tek bir
+    aykırı kare bu rank'in üstünde kalır ve 0,1% low'a giremez. Bu bir hata değil tanımın
+    sonucudur; rapor örnek sayısını da yazdığında sınır görünür olur.
+- `swap ortalama … · en kötü … · N ölçüm · GPU yetişiyor / GPU darboğazı olası` —
+  `Window#swapBuffers()` süresi. Geç kalmanın iki ayrı sebebi vardır ve bugüne kadar
+  ayırt edilemiyordu: iş parçacığı geç kaldı (CPU) ya da iş parçacığı zamanında bitti
+  ama GPU kareyi hazırlayamadı. V-Sync kapalıyken swap yüzlerce µs'de döner, kuyruk
+  doluysa **bloklar** — yani bu doğrudan GPU darboğaz göstergesidir.
+  - Yalnız ölçüm: HEAD/RETURN kancaları, sunum çağrısına dokunulmaz. Kare başına iki
+    `nanoTime` eklenir (~58 ns, kare bütçesinin %0,0004'ü).
+
+### Elenen hipotez
+
+Çevrimdışı koprobe ile park'ın **sistemde** sorunu olmadığı doğrulandı: 8 ms istek
+için `LockSupport.parkNanos` medyan −0,001 ms, 1 ms'den fazla erken dönüş **%0,0**.
+Sorun sistemde veya JVM'de değil, **oyunun render iş parçacığında**. Elde edilen
+araçlar (`FrameLimiterCpuProbe`, `FrameLimiterCostProbe`) boş bir JVM'de çalıştığı için
+bu boşluğu yapısal olarak göremiyor; bu yüzden yeni bir komut değil, sınırlayıcının
+kendi içindeki ölçüm genişletildi.
+
+### Bilinen sınır — karar henüz verilmedi
+
+**Bu sürümün davranış değişikliğinin etkisi ölçülmedi.** Üç sayı da eklendi tam olarak
+bunun için: kural işe yararsa spin düşer, yaramazsa en kötü %0,14 CPU ek gider. Beklenen
+değer pozitif ama gerçek koşu verisi yok. Karar raporun `başarısız park tekrarı X/Y`
+satırından verilecek.
+
+Ölçüm maliyeti ~%0,0004; retry'nin en kötü hali ~%0,14. Beklenen kazanç ise spin tamamen
+çöktüğünde kare başına ~4.360 µs, yani bir çekirdeğin dörtte biri.
+
 ## 1.3.0 — 2026-10-03
 
 Park'a güvenmeyi bırakır. Bekleme maliyeti kare başına 4.330 µs'tan (bir çekirdeğin

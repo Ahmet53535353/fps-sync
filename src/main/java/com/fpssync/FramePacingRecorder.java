@@ -66,6 +66,23 @@ public final class FramePacingRecorder {
     public static final long SATURATED = -1L;
 
     static final int LATE_BUCKETS = (int) (LATE_FINE_MAX_NS / LATE_FINE_STEP_NS) + 1;
+
+    /**
+     * Kare süresi histogramının üst sınırı: 64 ms.
+     *
+     * <p>Gecikmeden ayrı bir histogram gerekir çünkü gecikme <b>yalnız geç kareleri</b>
+     * tutar; zamanında kalanlar hiç girmez. "1% low" ise kare süresinin <em>tüm</em>
+     * dağılımına bakar. 60 Hz'de taban 16,67 ms; 50 ms'lik gecikmeler de ölçüm
+     * aralığının içinde.
+     */
+    public static final long FRAME_TIME_MAX_NS = 64_000_000L;
+
+    /** Kare süresi kovasının genişliği: 50 µs. 16,67 ms'de %0,3 çözünürlük. */
+    public static final long FRAME_TIME_STEP_NS = 50_000L;
+
+    static final int FRAME_TIME_BUCKETS =
+            (int) (FRAME_TIME_MAX_NS / FRAME_TIME_STEP_NS) + 1;
+
     /**
      * Park'ın gerçekte uyuduğu sürenin üst sınırı: 64 ms.
      *
@@ -110,9 +127,18 @@ public final class FramePacingRecorder {
         long lateFrames;
         long totalFrameNs;
         long latenessOverflowFrames;
+        long frameTimeCount;
+        long frameTimeOverflow;
+        long swapNsTotal;
+        long swapEntries;
+        long swapMaxNs;
+        final int[] frameTime = new int[FRAME_TIME_BUCKETS];
         long latenessMaxNs;
-        long parkCalls;
-        long parkNsTotal;
+long parkCalls;
+    long parkNsTotal;
+    long parkRetryAfterFailCalls;
+    long parkRetryAfterFailSleptCalls;
+    long parkRetryAfterFailSleptNs;
         long overshootOverflow;
         long overshootMaxNs;
         long overshootLateCalls;
@@ -145,9 +171,17 @@ public final class FramePacingRecorder {
             lateFrames = other.lateFrames;
             totalFrameNs = other.totalFrameNs;
             latenessOverflowFrames = other.latenessOverflowFrames;
+            frameTimeCount = other.frameTimeCount;
+            frameTimeOverflow = other.frameTimeOverflow;
+            swapNsTotal = other.swapNsTotal;
+            swapEntries = other.swapEntries;
+            swapMaxNs = other.swapMaxNs;
             latenessMaxNs = other.latenessMaxNs;
             parkCalls = other.parkCalls;
             parkNsTotal = other.parkNsTotal;
+            parkRetryAfterFailCalls = other.parkRetryAfterFailCalls;
+            parkRetryAfterFailSleptCalls = other.parkRetryAfterFailSleptCalls;
+            parkRetryAfterFailSleptNs = other.parkRetryAfterFailSleptNs;
             overshootOverflow = other.overshootOverflow;
             overshootMaxNs = other.overshootMaxNs;
             parkEarlyCalls = other.parkEarlyCalls;
@@ -161,6 +195,7 @@ public final class FramePacingRecorder {
             spinNsTotal = other.spinNsTotal;
             spinEntries = other.spinEntries;
             System.arraycopy(other.lateness, 0, lateness, 0, LATE_BUCKETS);
+            System.arraycopy(other.frameTime, 0, frameTime, 0, FRAME_TIME_BUCKETS);
             System.arraycopy(other.overshoot, 0, overshoot, 0, OVERSHOOT_BUCKETS);
             System.arraycopy(other.parkElapsed, 0, parkElapsed, 0, PARK_ELAPSED_BUCKETS);
             System.arraycopy(other.earlySleep, 0, earlySleep, 0, EARLY_SLEEP_BUCKETS);
@@ -171,9 +206,17 @@ public final class FramePacingRecorder {
             lateFrames = 0;
             totalFrameNs = 0;
             latenessOverflowFrames = 0;
+            frameTimeCount = 0;
+            frameTimeOverflow = 0;
+            swapNsTotal = 0;
+            swapEntries = 0;
+            swapMaxNs = 0;
             latenessMaxNs = 0;
             parkCalls = 0;
             parkNsTotal = 0;
+            parkRetryAfterFailCalls = 0;
+            parkRetryAfterFailSleptCalls = 0;
+            parkRetryAfterFailSleptNs = 0;
             overshootOverflow = 0;
             overshootMaxNs = 0;
             overshootLateCalls = 0;
@@ -188,6 +231,7 @@ public final class FramePacingRecorder {
             spinNsTotal = 0;
             spinEntries = 0;
             java.util.Arrays.fill(lateness, 0);
+            java.util.Arrays.fill(frameTime, 0);
             java.util.Arrays.fill(overshoot, 0);
             java.util.Arrays.fill(parkElapsed, 0);
             java.util.Arrays.fill(earlySleep, 0);
@@ -229,7 +273,7 @@ public final class FramePacingRecorder {
       public void recordFrame(long frameNs, long budgetNs, boolean waited,
               int parkCalls, long parkNs, long overshootNs, long spinNs) {
           recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs,
-                  0L, 0L, 0L);
+                  0L, 0L, 0L, 0, 0, 0L);
       }
 
       /**
@@ -248,7 +292,28 @@ public final class FramePacingRecorder {
               int parkCalls, long parkNs, long overshootNs, long spinNs,
               long parkElapsedNs) {
           recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs,
-                  parkElapsedNs, 0L, 0L);
+                  parkElapsedNs, 0L, 0L, 0, 0, 0L);
+    }
+
+    /**
+     * Teşhis sayaçlarıyla kare kaydeder; park tekrarı ölçülmez.
+     *
+     * @param frameNs       kare süresi
+     * @param budgetNs      hedef kare bütçesi
+     * @param waited        sınırlayıcı bekledi mi
+     * @param parkCalls     bu karedeki park çağrısı sayısı
+     * @param parkNs        park için istenen süre
+     * @param overshootNs   işaretli aşım; negatifse erken dönüş sayılır
+     * @param spinNs        harcanan spin süresi
+     * @param parkElapsedNs park'ın gerçekte geçirdiği süre
+     * @param interruptFlagFrames park anında kesinti bayrağı set olan kare
+     * @param interruptsCaught    yakalanan {@link InterruptedException} sayısı
+     */
+    public void recordFrame(long frameNs, long budgetNs, boolean waited,
+            int parkCalls, long parkNs, long overshootNs, long spinNs,
+            long parkElapsedNs, long interruptFlagFrames, long interruptsCaught) {
+        recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs,
+                parkElapsedNs, interruptFlagFrames, interruptsCaught, 0, 0, 0L);
     }
 
     /**
@@ -266,10 +331,47 @@ public final class FramePacingRecorder {
      * @param parkElapsedNs park çağrılarının bu karede gerçekte geçirdiği süre
      * @param interruptFlagFrames park anında kesinti bayrağı set olan kare
      * @param interruptsCaught    yakalanan {@link InterruptedException} sayısı
+     * @param retryAfterFailCalls  fayda koruması devreye girip bir kez daha denendiği kare
+     * @param retryAfterFailSleptCalls  o tekrarın <em>gerçekten uyuduğu</em> sayısı
+     * @param retryAfterFailSleptNs     tekrar denemelerin toplam uyuma süresi
      */
     public void recordFrame(long frameNs, long budgetNs, boolean waited,
             int parkCalls, long parkNs, long overshootNs, long spinNs,
-            long parkElapsedNs, long interruptFlagFrames, long interruptsCaught) {
+            long parkElapsedNs, long interruptFlagFrames, long interruptsCaught,
+            int retryAfterFailCalls, int retryAfterFailSleptCalls,
+            long retryAfterFailSleptNs) {
+        recordFrame(frameNs, budgetNs, waited, parkCalls, parkNs, overshootNs, spinNs,
+                parkElapsedNs, interruptFlagFrames, interruptsCaught,
+                retryAfterFailCalls, retryAfterFailSleptCalls, retryAfterFailSleptNs,
+                0L, 0L, 0L);
+    }
+
+    /**
+     * Bir kareyi swap ölçümüyle birlikte kaydeder.
+     *
+     * @param frameNs       kare süresi
+     * @param budgetNs      hedef kare bütçesi
+     * @param waited        sınırlayıcı bekledi mi
+     * @param parkCalls     bu karedeki park çağrısı sayısı
+     * @param parkNs        park için istenen süre
+     * @param overshootNs   işaretli aşım; negatifse erken dönüş sayılır
+     * @param spinNs        bu karede harcanan spin süresi
+     * @param parkElapsedNs park'ın gerçekte geçirdiği süre
+     * @param interruptFlagFrames park anında kesinti bayrağı set olan kare
+     * @param interruptsCaught    yakalanan {@link InterruptedException} sayısı
+     * @param retryAfterFailCalls  fayda koruması devreye girip tekrar denendiği kare
+     * @param retryAfterFailSleptCalls  o tekrarın gerçekten uyuduğu sayısı
+     * @param retryAfterFailSleptNs     tekrar denemelerin toplam uyuma süresi
+     * @param swapNsTotal    bu kareye düşen swap süresi toplamı
+     * @param swapEntries    bu kareye düşen swap ölçüm sayısı
+     * @param swapMaxNs      bu kareye düşen en kötü swap süresi
+     */
+    public void recordFrame(long frameNs, long budgetNs, boolean waited,
+            int parkCalls, long parkNs, long overshootNs, long spinNs,
+            long parkElapsedNs, long interruptFlagFrames, long interruptsCaught,
+            int retryAfterFailCalls, int retryAfterFailSleptCalls,
+            long retryAfterFailSleptNs,
+            long swapNsTotal, long swapEntries, long swapMaxNs) {
         if (paused) {
             return;
         }
@@ -277,6 +379,15 @@ public final class FramePacingRecorder {
         Regime r = waited ? active : idle;
         r.frames++;
         r.totalFrameNs += frameNs;
+
+        // Kare süresi dağılımı: 1% low için gereklidir. Gecikmeden ayrıdır çünkü
+        // zamanında kalan kareler de dağılımın parçasıdır.
+        r.frameTimeCount++;
+        if (frameNs >= 0 && frameNs < FRAME_TIME_MAX_NS) {
+            r.frameTime[(int) (frameNs / FRAME_TIME_STEP_NS)]++;
+        } else {
+            r.frameTimeOverflow++;
+        }
 
         long lateness = frameNs - budgetNs;
         if (lateness > 0) {
@@ -299,6 +410,14 @@ public final class FramePacingRecorder {
 
         r.interruptFlagFrames += interruptFlagFrames;
         r.interruptsCaught += interruptsCaught;
+        r.parkRetryAfterFailCalls += retryAfterFailCalls;
+        r.parkRetryAfterFailSleptCalls += retryAfterFailSleptCalls;
+        r.parkRetryAfterFailSleptNs += retryAfterFailSleptNs;
+        r.swapNsTotal += swapNsTotal;
+        r.swapEntries += swapEntries;
+        if (swapMaxNs > r.swapMaxNs) {
+            r.swapMaxNs = swapMaxNs;
+        }
 
         if (parkCalls > 0) {
             r.parkCalls += parkCalls;
@@ -373,11 +492,20 @@ public final class FramePacingRecorder {
      * @param parkEarlyNsTotal erken dönüşlerin toplam büyüklüğü
      * @param interruptFlagFrames park anında kesinti bayrağı set olan kare
      * @param interruptsCaught    yakalanan {@link InterruptedException} sayısı
+     * @param parkRetryAfterFailCalls fayda koruması devreye girip bir kez daha denendiği kare
+     * @param parkRetryAfterFailSleptCalls o tekrarın <em>gerçekten uyuduğu</em> sayısı
+     * @param parkRetryAfterFailSleptNs    tekrar denemelerin toplam uyuma süresi
+     * @param swapNsTotal    ölçülen swap süresi toplamı
+     * @param swapEntries    swap ölçüm sayısı
+     * @param swapMaxNs      en kötü tek swap süresi
      */
     public record Totals(long elapsedNs, long waitingFrames, long idleFrames,
             long lateFrames, long spinNsTotal, long spinEntries, long parkCalls,
             long parkNsTotal, long parkEarlyCalls, long parkEarlyNsTotal,
-            long interruptFlagFrames, long interruptsCaught) {
+            long interruptFlagFrames, long interruptsCaught,
+            long parkRetryAfterFailCalls, long parkRetryAfterFailSleptCalls,
+            long parkRetryAfterFailSleptNs, long swapNsTotal, long swapEntries,
+            long swapMaxNs) {
 
 /**
            * Penceredeki toplam kare: bekleyen ve boşta geçenler.
@@ -429,7 +557,9 @@ public final class FramePacingRecorder {
         return new Totals(elapsed, a.frames, i.frames, a.lateFrames,
                 a.spinNsTotal, a.spinEntries, a.parkCalls, a.parkNsTotal,
                 a.parkEarlyCalls, a.parkEarlyNsTotal,
-                a.interruptFlagFrames, a.interruptsCaught);
+                a.interruptFlagFrames, a.interruptsCaught,
+                a.parkRetryAfterFailCalls, a.parkRetryAfterFailSleptCalls,
+                a.parkRetryAfterFailSleptNs, a.swapNsTotal, a.swapEntries, a.swapMaxNs);
     }
 
     /** Rapor üretimi sırasında ölçümü durdurmak için. */
@@ -536,8 +666,121 @@ public final class FramePacingRecorder {
           return SATURATED;
       }
 
-    // --- bekleyen (sınırlayıcı aktif) rejim ---
+    /**
+     * Kare süresi histogramından yüzdelik, <b>kova orta noktası</b> ile.
+     *
+     * <p>Neden orta nokta: {@link #percentile} kova <b>alt sınırını</b> döndürür. Gecikme
+     * için bu bir tercihtir — "ölçemedim" ile "tam bu değer" ayrımını silmemek içindir.
+     * Ama kare süresinden FPS türetilir ve alt sınır süreyi <b>eksik</b> saydığı için
+     * FPS'i <b>gerçekten yüksek</b> gösterirdi. Sapma tek kova genişliğinde kalır:
+     * 50 µs, 16,67 ms'de %0,3.
+     *
+     * @param q istenen yüzdelik, 0–1 arası
+     * @return kare süresinin istenen yüzdeliği, nanosaniye; dağılım dışındaysa
+     *         {@link #SATURATED}
+     */
+    private static long percentileMid(int[] hist, long count, long step, double q) {
+        long lower = percentile(hist, count, step, q);
+        if (lower == SATURATED) {
+            return SATURATED;
+        }
+        return lower + step / 2;
+    }
 
+    /**
+     * Sınırlayıcı beklerken ölçülen kare sayısı.
+     *
+     * <p>Kare süresi dağılımının örnek sayısıdır; zamanında kalan kareler de dahildir.
+     *
+     * @return kare sayısı
+     */
+    public long activeFrameTimeCount() {
+        return active.frameTimeCount;
+    }
+
+    /**
+     * Kare süresi histogramının dışına düşen kare sayısı.
+     *
+     * <p>64 ms üstü kareler ölçüm aralığının dışındadır; sessizce yok sayılırsa yüzdelik
+     * iyimserleşir, bu yüzden ayrıca sayılır ve raporda belirtilir.
+     *
+     * @return tavan dışı kare sayısı
+     */
+    public long activeFrameTimeOverflow() {
+        return active.frameTimeOverflow;
+    }
+
+    /**
+     * Sınırlayıcı beklerken kare süresinin istenen yüzdeliği.
+     *
+     * @param q istenen yüzdelik, 0–1 arası
+     * @return kare süresinin istenen yüzdeliği, nanosaniye
+     */
+    public long activeFrameTimePercentileNs(double q) {
+        return percentileMid(active.frameTime, active.frameTimeCount,
+                FRAME_TIME_STEP_NS, q);
+    }
+
+    /**
+     * <b>1% low</b>: en yavaş %1'lik dilimin FPS karşılığı.
+     *
+     * <p>Gecikme yüzdesi tek başına yetmez: "geç kare %37,5" bir sayıdır, şiddet değildir.
+     * 1 ms'lik tırtıklama ile 40 ms'lik duraklama aynı sayıda geç karedir. 1% low ikisini
+     * tek sayıda özetler.
+     *
+     * @return 1% low FPS; örnek yoksa 0
+     */
+    public double activeFps1Low() {
+        return fpsFromFrameTime(activeFrameTimePercentileNs(0.99));
+    }
+
+    /**
+     * <b>0,1% low</b>: en yavaş %0,1'lik dilimin FPS karşılığı.
+     *
+     * @return 0,1% low FPS; örnek yoksa 0
+     */
+    public double activeFps01Low() {
+        return fpsFromFrameTime(activeFrameTimePercentileNs(0.999));
+    }
+
+    /**
+     * Sınırlayıcı beklerken ölçülen swap çağrısı sayısı.
+     *
+     * @return swap ölçüm sayısı
+     */
+    public long activeSwapEntries() {
+        return active.swapEntries;
+    }
+
+    /**
+     * Sınırlayıcı beklerken ölçülen swap süresi toplamı.
+     *
+     * @return toplam swap süresi, nanosaniye
+     */
+    public long activeSwapNsTotal() {
+        return active.swapNsTotal;
+    }
+
+    /**
+     * En kötü tek swap süresi.
+     *
+     * <p>GPU darboğazının en güçlü göstergesi: swap kare süresi kadar blokluyorsa
+     * iş parçacığı değil GPU geciktir.
+     *
+     * @return en kötü swap süresi, nanosaniye
+     */
+    public long activeSwapMaxNs() {
+        return active.swapMaxNs;
+    }
+
+    private static double fpsFromFrameTime(long ns) {
+        if (ns <= 0 || ns == SATURATED) {
+            return 0.0;
+        }
+        return 1_000_000_000.0 / ns;
+    }
+
+    // --- bekleyen (sınırlayıcı aktif) rejim ---
     /**
      * Sınırlayıcı beklerken geçen kare sayısı.
      * @return sınırlayıcı beklerken geçen kare sayısı
@@ -750,6 +993,42 @@ public long activeOvershootMaxNs() {
        */
       public long interruptsCaught() {
           return active.interruptsCaught;
+      }
+
+      /**
+       * Fayda koruması devreye girip bir kez daha park denenen çağrı sayısı.
+       *
+       * <p>Sıfırken hiç tekrar denenmemiş demektir; yani park her karede tek denemede
+       * faydalı olmuştur.
+       *
+       * @return başarısız çağrıdan sonra tekrar denenen kare sayısı
+       */
+      public long activeParkRetryAfterFailCalls() {
+          return active.parkRetryAfterFailCalls;
+      }
+
+      /**
+       * Bu tekrarın <b>gerçekten uyuduğu</b> sayısı.
+       *
+       * <p>Karar sayısı {@code activeParkRetryAfterFailSleptCalls()} /
+       * {@link #activeParkRetryAfterFailCalls()} oranıdır.
+       *
+       * @return tekrarın fayda sağladığı çağrı sayısı
+       */
+      public long activeParkRetryAfterFailSleptCalls() {
+          return active.parkRetryAfterFailSleptCalls;
+      }
+
+      /**
+       * Tekrar denemelerin toplam uyuma süresi.
+       *
+       * <p>Bir park çağrısının CPU maliyeti ~45 µs. Bu toplamın çağrı sayısına bölümü
+       * gideri aşıp aşmadığını gösterir.
+       *
+       * @return tekrar denemelerin toplam uyuma süresi (ns)
+       */
+      public long activeParkRetryAfterFailSleptNs() {
+          return active.parkRetryAfterFailSleptNs;
       }
 
       /**

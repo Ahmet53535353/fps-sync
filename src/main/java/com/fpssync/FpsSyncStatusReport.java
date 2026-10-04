@@ -94,6 +94,9 @@ public final class FpsSyncStatusReport {
                 b.append("  park gerçek ").append(parkElapsedLine(r)).append('\n');
                 b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
                 appendInterruptLine(b, r);
+                b.append(retryLine(r));
+                b.append(fpsLowLine(r));
+                b.append(swapLine(r));
                 b.append("               dağılım ")
                         .append(r.activeOvershootLateCalls()).append(" geç dönüş üzerinden")
                         .append(", ").append(r.activeParkEarlyCalls())
@@ -286,6 +289,125 @@ b.append("\nÖZET\n");
             b.append(" (").append(percent(100.0 * flagged / park)).append(')');
         }
         b.append(" · yakalanan InterruptedException: ").append(caught).append('\n');
+    }
+
+    /**
+     * Başarısız park çağrısından sonra yapılan tekrarın ölçümü.
+     *
+     * <p>Fayda koruması devreye girdiğinde sınırlayıcı tam bir kez daha park dener.
+     * Bu satır o tekrarın <b>ne kadar işe yaradığını</b> ölçer ve karar buradan çıkar:
+     *
+     * <pre>
+     *   faydalı tekrar oranı = faydalı / toplam tekrar
+     * </pre>
+     *
+     * <p>%3'ün üstünde kural kalmalı (45 µs gider, karşılığında 6,7 ms uyku), %1'in
+     * altında geri alınmalı. Oran yazılır çünkü <em>mutlak sayı değil oran</em> karar
+     * verir: az sayıda denemenin az sayıda isabeti yanıltıcıdır.
+     */
+    private static String retryLine(FramePacingRecorder r) {
+        long tries = r.activeParkRetryAfterFailCalls();
+        long slept = r.activeParkRetryAfterFailSleptCalls();
+        long sleptNs = r.activeParkRetryAfterFailSleptNs();
+        if (tries == 0) {
+            return "  tekrar        yok (park tek denemede faydalıydı)\n";
+        }
+        StringBuilder b = new StringBuilder(112);
+        b.append("  başarısız park tekrarı ").append(slept).append('/').append(tries)
+                .append(" faydalı");
+        if (tries > 0) {
+            b.append(" (").append(percent(100.0 * slept / tries)).append(')');
+        }
+        if (slept > 0) {
+            long avgNs = sleptNs / slept;
+            b.append(" · ortalama ").append(ms(avgNs)).append(" kazanç");
+            // Ek gider her tekrar için ~45 µs; kazanç onu aşıyor mu?
+            if (avgNs > 45_000L) {
+                b.append(" · 45 µs gideri aşıyor");
+            } else {
+                b.append(" · 45 µs giderini AŞMIYOR");
+            }
+        }
+        return b.append('\n').toString();
+    }
+
+    /**
+ * <b>1% low</b> ve <b>0,1% low</b> — endüstrinin standart pürüzsüzlük ölçütü.
+ *
+ * <p>{@code geç kare} yüzdesi tek başına yetmez: o bir <em>sayı</em>dır, şiddet
+ * değildir. 1 ms'lik bir tırtıklama ile 40 ms'lik bir duraklama aynı sayıda geç karedir
+ * ve oyuncuya farklı hissettirir. 1% low, en yavaş %1'lik dilimi FPS olarak özetler.
+ *
+ * <p>Yüzde örneklemeleri hakkında: {@code q=0,999} rank {@code ceil(0,999·N)}'dir. Az
+ * örnekli bir oturumda tek bir aykırı kare bu rank'in üstünde kalır ve 0,1% low'a
+ * <em>giremez</em>. Bu bir hata değil tanımın sonucudur; rapor örnek sayısını da
+ * yazdığında sınır görünür olur.
+ *
+ * <p>Etiketler nokta ile yazılır ({@code 0.1% low}, {@code p99.9}), virgül değil: raporun
+ * ondalık ayırıcısı nokta olmak zorunda. {@code 0,1% low} yazıldığında
+ * {@code \d,\d} desenine takılıyor ve yerelleştirme garantisi bozuluyordu — bu satır
+ * yazıldıktan sonra mevcut yerelleştirme testi kırıldı ve kırmızıydı.
+ */
+    private static String fpsLowLine(FramePacingRecorder r) {
+        long samples = r.activeFrameTimeCount();
+        long overflow = r.activeFrameTimeOverflow();
+        if (samples == 0) {
+            return "  1% low       ölçülmedi\n";
+        }
+        double fps1 = r.activeFps1Low();
+        double fps01 = r.activeFps01Low();
+        long p99 = r.activeFrameTimePercentileNs(0.99);
+        long p999 = r.activeFrameTimePercentileNs(0.999);
+
+        StringBuilder b = new StringBuilder(104);
+        b.append("  1% low       ");
+        if (fps1 <= 0.0) {
+            b.append("çözülemedi");
+        } else {
+            b.append(num(fps1, 1)).append(" FPS").append("  ·  0.1% low ");
+            if (fps01 <= 0.0) {
+                b.append("çözülemedi");
+            } else {
+                b.append(num(fps01, 1));
+            }
+            b.append("  (p99 ").append(ms(p99)).append(" · p99.9 ")
+                    .append(ms(p999)).append(')');
+        }
+        b.append("  ·  ").append(samples).append(" kare");
+        if (overflow > 0) {
+            b.append(", ").append(overflow).append(" kare 64 ms üstü (yüzdelik çözülemedi)");
+        }
+        return b.append('\n').toString();
+    }
+
+    /**
+ * {@code Window#swapBuffers()} süresi — GPU darboğaz göstergesi.
+ *
+ * <p>V-Sync kapalıyken swap normalde yüzlerce mikrosaniyede döner, kuyruk doluysa
+ * bloklar. Bu satır "geç kalma CPU'dan mı GPU'dan" sorusunu doğrudan yanıtlar:
+ *
+ * <pre>
+ *   swap ≈ 200 µs → GPU yetişiyor; geç kalmanın sebebi CPU/sınırlayıcı
+ *   swap ≈ 16 ms  → swap kare süresi kadar blokluyor; GPU darboğaz
+ * </pre>
+ */
+    private static String swapLine(FramePacingRecorder r) {
+        long entries = r.activeSwapEntries();
+        if (entries <= 0) {
+            return "  swap         ölçülmedi\n";
+        }
+        long avg = r.activeSwapNsTotal() / entries;
+        long max = r.activeSwapMaxNs();
+        StringBuilder b = new StringBuilder(88);
+        b.append("  swap         ortalama ").append(us(avg))
+                .append("  ·  en kötü ").append(ms(max))
+                .append("  ·  ").append(entries).append(" ölçüm");
+        if (max >= 8_000_000L) {
+            b.append("  ·  GPU darboğazı olası");
+        } else {
+            b.append("  ·  GPU yetişiyor");
+        }
+        return b.append('\n').toString();
     }
 
     private static String overshootLine(FramePacingRecorder r) {

@@ -162,7 +162,18 @@ class FrameLimiterInterruptDiagnosticTest {
     @DisplayName("yakalanan InterruptedException sayılır")
     void caughtInterruptIsCounted() {
         Rig rig = new Rig();
-        rig.limiter.sleeper = ns -> { throw new InterruptedException("test"); };
+        // Yalnız İLK çağrı kesinti atar. Böylece sayı, tekrar politikasından bağımsız
+        // olarak tam 1 olur: bu test "kesinti sayılıyor" davranışını doğrular, kaç kez
+        // tekrar denendiğini değil (o ParkRetryAfterFailTest'in konusu).
+        int[] calls = {0};
+        rig.limiter.sleeper = ns -> {
+            if (calls[0]++ == 0) {
+                throw new InterruptedException("test");
+            }
+            // Sonraki çağrı normal uyur: kesinti "başarısız çağrı" sayılır ve
+            // sınırlayıcı tam bir kez daha dener (bkz. ParkRetryAfterFailTest).
+            rig.clock[0] += ns;
+        };
         try {
             rig.frame();
 

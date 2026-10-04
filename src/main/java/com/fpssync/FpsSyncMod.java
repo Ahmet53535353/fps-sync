@@ -5,6 +5,15 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * Modun giriş noktası ve ölçüm merkezi.
+ *
+ * <p>Ölçüm zinciri: {@code GameRenderer} karesi bitirir → {@link #recordFrameTiming()}
+ * sınırlayıcının sayaçlarını toplar ve kayıtçıya bir kare yazar. Sunum süresi ayrı bir
+ * yoldan ({@link #onSwapBegin()} / {@link #onSwapEnd()}) gelir ve aynı kayda boşaltılır.
+ *
+ * <p>Hiçbir yol ölçümü değiştirmez: oyun mantığına, hasara, sağlığa dokunulmaz.
+ */
 public class FpsSyncMod implements ClientModInitializer {
 
     /** Mod kimliği; {@code fabric.mod.json} ile aynı olmalıdır. */
@@ -21,6 +30,34 @@ public class FpsSyncMod implements ClientModInitializer {
 
     /** Kare süresi farkı için taban zaman. */
     private static long lastFrameNsBase;
+
+    /**
+     * {@code Window#swapBuffers()} süresi toplayıcı.
+     *
+     * <p>Kare sonunda {@link #recordFrameTiming()} içinde boşaltılır. Zaman damgaları
+     * {@link SwapTimer}'a dışarıdan verilir; sınıf kendi saatini okumaz, böylece
+     * ölçüm davranışı gerçek zamandan bağımsız sınanabilir.
+     */
+    private static final SwapTimer SWAP = new SwapTimer();
+
+    /**
+     * Sunum çağrısı başladı.
+     *
+     * <p>{@code WindowMixin} HEAD kancasından gelir. Yalnızca ölçüm: swap çağrısının
+     * kendisine dokunulmaz.
+     */
+    public static void onSwapBegin() {
+        SWAP.begin(System.nanoTime());
+    }
+
+    /**
+     * Sunum çağrısı bitti; geçen süre ölçülür.
+     *
+     * <p>Başlangıç kaydı yoksa sayılmaz — yalnız bitiş bilmek süre çıkarmaya yetmez.
+     */
+    public static void onSwapEnd() {
+        SWAP.end(System.nanoTime());
+    }
 
     /**
      * {@code SodiumFpsLimitMixin} hedefe başarıyla uygulandı mı?
@@ -77,6 +114,12 @@ public class FpsSyncMod implements ClientModInitializer {
         FrameLimiter limiter = LIMITER;
         long now = limiter.nanoTimeLastFrame;
         long budget = limiter.frameBudgetNsLastFrame;
+        // Swap ölçümü: değerler okunur, sonra sıfırlanır. Tek bir kayıt nesnesi
+        // yaratılmaz — ölçüm yolu sıfır ayak izi kuralına tabidir.
+        long swapNs = SWAP.nsTotal();
+        long swapEntries = SWAP.entries();
+        long swapMax = SWAP.maxNs();
+        SWAP.reset();
 
         if (budget > 0 && now > 0) {
             if (lastFrameNsBase > 0) {
@@ -86,7 +129,10 @@ public class FpsSyncMod implements ClientModInitializer {
                             limiter.parkCallsLastFrame, limiter.parkRequestedNsLastFrame,
                             limiter.parkOvershootNsLastFrame, limiter.spinNsLastFrame,
                             limiter.parkElapsedNsLastFrame,
-                            limiter.interruptFlagSetFrames, limiter.interruptsCaught);
+                            limiter.interruptFlagSetFrames, limiter.interruptsCaught,
+                            limiter.retryAfterFailCalls, limiter.retryAfterFailSleptCalls,
+                            limiter.retryAfterFailSleptNs,
+                            swapNs, swapEntries, swapMax);
                 }
             }
             lastFrameNsBase = now;

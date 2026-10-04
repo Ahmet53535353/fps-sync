@@ -24,8 +24,12 @@ import org.junit.jupiter.api.Test;
  * <h2>Neden sonsuz döngü olmaz</h2>
  * İki ayrı güvence var ve ikisi de ölçümle doğrulanır:
  * <ul>
- *   <li><b>İlerleme koruması:</b> park istenenin çeyreğini bile geçmediyse uyku
- *       yapmıyor demektir; tekrar denemek yalnızca syscall ekler.</li>
+ *   <li><b>Tek deneme kuralı:</b> fayda koruması devreye girdiğinde (park çağrısı
+ *       kendi ~45 µs CPU maliyetini karşılamadı) tam <em>bir kez</em> daha denenir,
+ *       sonra kare kapanır. Bir kez daha denemenin gerekçesi ve ölçümü
+ *       {@link ParkRetryAfterFailTest} içindedir: gerçek dağılım iki modlu
+ *       (medyan 0 µs, p95 6.740 µs), dolayısıyla "bu çağrı uyumadı" demek
+ *       "sonraki de uyumayacak" demek <em>değildir</em>.</li>
  *   <li><b>Güvenlik ağı:</b> çağrı sayısı bir üst sınıra ulaşınca döngü biter.</li>
  * </ul>
  *
@@ -128,14 +132,19 @@ class FrameLimiterRetryParkTest {
     }
 
     @Test
-    @DisplayName("park spin penceresinden az fayda verirse tekrar denemez")
-    void lowValueParkIsNotRetried() {
+    @DisplayName("spin penceresinden az fayda verirse tam bir kez daha denenir")
+    void lowValueParkGetsExactlyOneMoreTry() {
         // İstenenin %0,5'i = 8,23 ms'den 41 µs. Spin penceresinin (100 µs) altında,
         // yani park çağrısının kendi CPU maliyetini (~45 µs) karşılamıyor.
+        //
+        // 1.3.0 burada koşulsuz kırıyordu ve yanlış varsayıma dayanıyordu: gerçek
+        // dağılım iki modlu (medyan 0 µs, p95 6.740 µs), yani "bu çağrı uyumadı"
+        // demek "sonraki de uyumayacak" demek değildir. Şimdi tam bir kez daha
+        // denenir; ikinci deneme de tutmazsa kare kapanır. Bkz. ParkRetryAfterFailTest.
         Result r = run(0.005);
 
-        assertEquals(1, r.parkCalls,
-                "faydasız park çağrısı tekrar edilmemeli, çağrı: " + r.parkCalls);
+        assertEquals(2, r.parkCalls,
+                "faydasız park çağrısı tam bir kez daha denenmeli, çağrı: " + r.parkCalls);
     }
 
     @Test
