@@ -138,6 +138,8 @@ public final class FramePacingRecorder {
         long swapOnTimeEntries;
         /** Görülen ilk kare bütçesi; swap yüzdesini bu bütçeye göre vermek için. */
         long budgetNs;
+        /** Oturumda sınır durumu kaç kez değişti (FPS Sync / elle / sınırsız). */
+        long stateChanges;
         final int[] frameTime = new int[FRAME_TIME_BUCKETS];
         long latenessMaxNs;
 long parkCalls;
@@ -187,6 +189,7 @@ long parkCalls;
             swapOnTimeNsTotal = other.swapOnTimeNsTotal;
             swapOnTimeEntries = other.swapOnTimeEntries;
             budgetNs = other.budgetNs;
+            stateChanges = other.stateChanges;
             latenessMaxNs = other.latenessMaxNs;
             parkCalls = other.parkCalls;
             parkNsTotal = other.parkNsTotal;
@@ -227,6 +230,7 @@ long parkCalls;
             swapOnTimeNsTotal = 0;
             swapOnTimeEntries = 0;
             budgetNs = 0;
+            stateChanges = 0;
             latenessMaxNs = 0;
             parkCalls = 0;
             parkNsTotal = 0;
@@ -540,7 +544,8 @@ long parkCalls;
             long interruptFlagFrames, long interruptsCaught,
             long parkRetryAfterFailCalls, long parkRetryAfterFailSleptCalls,
             long parkRetryAfterFailSleptNs, long swapNsTotal, long swapEntries,
-            long swapMaxNs) {
+            long swapMaxNs, long stateChanges, long idleFrameTimeCount,
+            long idleSwapLateEntries, long idleSwapOnTimeEntries) {
 
 /**
            * Penceredeki toplam kare: bekleyen ve boşta geçenler.
@@ -594,7 +599,8 @@ long parkCalls;
                 a.parkEarlyCalls, a.parkEarlyNsTotal,
                 a.interruptFlagFrames, a.interruptsCaught,
                 a.parkRetryAfterFailCalls, a.parkRetryAfterFailSleptCalls,
-                a.parkRetryAfterFailSleptNs, a.swapNsTotal, a.swapEntries, a.swapMaxNs);
+                a.parkRetryAfterFailSleptNs, a.swapNsTotal, a.swapEntries, a.swapMaxNs,
+                a.stateChanges, i.frameTimeCount, i.swapLateEntries, i.swapOnTimeEntries);
     }
 
     /** Rapor üretimi sırasında ölçümü durdurmak için. */
@@ -846,6 +852,81 @@ long parkCalls;
     /** @return zamanında karelerde ölçülen swap süresi toplamı, nanosaniye */
     public long activeSwapOnTimeNsTotal() {
         return active.swapOnTimeNsTotal;
+    }
+
+    /** Oturumda sınır durumu kaç kez değişti. */
+    public long stateChanges() {
+        return active.stateChanges;
+    }
+
+    /** Durum değişimini kaydeder. Ana rejim altında toplanır. */
+    public void recordStateChange() {
+        active.stateChanges++;
+    }
+
+    // --- boşta (sınırlayıcı çalışmadı) rejim --------------------------------
+    //
+    // Taban koşusu bu rejimde toplanır. Veri zaten dolduruluyordu — frameTime
+    // histogramı her kare için her iki rejimde de yazılıyor — ama erişimciler
+    // yalnız `active` okuduğu için rapor boşta rejimi tek satırla geçiyordu.
+    // "Mod kapalıyken ne kadar iyi" sorusunu ölçememek, o soruyu cevaplamamanın
+    // en pahalı biçimiydi.
+
+    /** @return sınırlayıcı çalışmadığı kare sayısı */
+    public long idleFrameTimeCount() {
+        return idle.frameTimeCount;
+    }
+
+    /** @return boşta rejimde 1% low FPS; örnek yoksa 0 */
+    public double idleFps1Low() {
+        return fpsFromFrameTime(percentileMid(idle.frameTime, idle.frameTimeCount,
+                FRAME_TIME_STEP_NS, 0.99));
+    }
+
+    /** @return boşta rejimde 0,1% low FPS; örnek yoksa 0 */
+    public double idleFps01Low() {
+        return fpsFromFrameTime(percentileMid(idle.frameTime, idle.frameTimeCount,
+                FRAME_TIME_STEP_NS, 0.999));
+    }
+
+    /** @return boşta rejimde kare süresinin istenen yüzdeliği, nanosaniye */
+    public long idleFrameTimePercentileNs(double q) {
+        return percentileMid(idle.frameTime, idle.frameTimeCount, FRAME_TIME_STEP_NS, q);
+    }
+
+    /** @return boşta rejimde ölçülen swap çağrısı sayısı */
+    public long idleSwapEntries() {
+        return idle.swapEntries;
+    }
+
+    /** @return boşta rejimde swap süresi toplamı, nanosaniye */
+    public long idleSwapNsTotal() {
+        return idle.swapNsTotal;
+    }
+
+    /** @return boşta rejimde en kötü swap süresi, nanosaniye */
+    public long idleSwapMaxNs() {
+        return idle.swapMaxNs;
+    }
+
+    /** @return boşta rejimde geç karelerdeki swap ölçüm sayısı */
+    public long idleSwapLateEntries() {
+        return idle.swapLateEntries;
+    }
+
+    /** @return boşta rejimde geç karelerdeki swap süresi toplamı */
+    public long idleSwapLateNsTotal() {
+        return idle.swapLateNsTotal;
+    }
+
+    /** @return boşta rejimde zamanında karelerdeki swap ölçüm sayısı */
+    public long idleSwapOnTimeEntries() {
+        return idle.swapOnTimeEntries;
+    }
+
+    /** @return boşta rejimde zamanında karelerdeki swap süresi toplamı */
+    public long idleSwapOnTimeNsTotal() {
+        return idle.swapOnTimeNsTotal;
     }
 
     private static double fpsFromFrameTime(long ns) {

@@ -225,6 +225,24 @@ public class FrameLimiter {
     LongConsumer onSpin = spin -> { };
     Runnable spinHook = NO_SPIN_HOOK;
 
+    /** Son çözülen hedef FPS; 0 sınırsız. Durum değişimi için. */
+    private int targetFpsLastFrame;
+    /** İlk çözümden sonra anlamlı; ilk kare "değişim" sayılmasın diye. */
+    private boolean hasResolvedTarget;
+
+    /**
+     * Hedef değiştiğinde çağrılır: {@code (eskiHedef, yeniHedef)}.
+     *
+     * <p>Üretimde {@link FpsSyncMod} bunu kayıtçıya bağlar. Sıfır değer "sınırsız".
+     */
+    LongConsumer2 onTargetChanged = (from, to) -> { };
+
+    /** İki {@code int} alan geçen geri çağrı. */
+    @FunctionalInterface
+    interface LongConsumer2 {
+        void accept(int a, int b);
+    }
+
     // --- /fpsync status sayaçları -------------------------------------------------
     // Yalnız kare içinde gerçekten beklendiğinde artar; beklemeyen karelerde bu
     // alanlara hiç dokunulmaz. Böylece "limiter boşta" rejiminin ölçüm maliyeti
@@ -329,6 +347,7 @@ public class FrameLimiter {
         this.sleeper = LockSupport::parkNanos;
         this.onSpin = spin -> { };
         this.spinHook = NO_SPIN_HOOK;
+        this.onTargetChanged = (from, to) -> { };
     }
 
     public void setEnabled(boolean value) {
@@ -357,6 +376,11 @@ public class FrameLimiter {
         fpsSyncEnabled = false;
         manualFpsLimit = 0;
         monitorRefreshRate = 60;
+        // Durum değişimi takibi de sıfırlanır. Aksi halde bir sonraki oturum
+        // başlangıcını "değişiklik" sanır ve GEÇERSİZ OTURUM uyarısı doğru
+        // olmayan bir koşuyu geçersiz ilan ederdi.
+        targetFpsLastFrame = 0;
+        hasResolvedTarget = false;
     }
 
     public void limitFrame() {
@@ -367,10 +391,25 @@ public class FrameLimiter {
         } else if (FpsSyncOption.isManual(manualFpsLimit)) {
             targetFps = manualFpsLimit;
         } else {
-            return; // sınırsız (0 ya da FpsSyncOption.UNLIMITED ve üstü)
+            targetFps = 0;
         }
 
-        if (targetFps <= 0) return;
+        // Durum değişimi tespiti: oturumda hedef değişirse ölçüm iki farklı
+        // koşulun karışımı olur ve ortalamaları karşılaştırmada kullanılamaz.
+        // Gerçek bir koşuda ilk 25 saniye FPS Sync (oyun ~60 FPS), sonra sınırsız
+        // (oyun ~25 FPS) toplandı ve "gerçek FPS 31,0" ikisinin ortalamasıydı —
+        // hiçbir anlamı yoktu.
+        if (targetFps != targetFpsLastFrame) {
+            if (hasResolvedTarget) {
+                onTargetChanged.accept(targetFpsLastFrame, targetFps);
+            }
+            hasResolvedTarget = true;
+            targetFpsLastFrame = targetFps;
+        }
+
+        if (targetFps <= 0) {
+            return; // sınırsız (0 ya da FpsSyncOption.UNLIMITED ve üstü)
+        }
 
         long frameBudgetNs = 1_000_000_000L / targetFps;
         frameBudgetNsLastFrame = frameBudgetNs;
@@ -407,7 +446,15 @@ public class FrameLimiter {
         // vazgeçti. Aşağıdaki kural onu bir kez daha denemeye çevirir ve sonucu
         // sayar; karar o sayılara bakar.
         long before = now;
+        // İKİ bayrak, iki işi ayrı tutar:
+        //   retriedAfterFail → tekrarı korur (kare başına en fazla bir kez)
+        //   retryCounted     → SAYIMI korur (yalnız ilk faydalı çağrı sayılır)
+        //
+        // Tek bayrak kalmışsa sayaç şişer: retriedAfterFail kare boyunca true
+        // kaldığı için sonraki HER başarılı çağrı fayda sayılır. Gerçek bir
+        // koşuda bu "%102,9 faydalı" gibi imkânsız bir oran üretti.
         boolean retriedAfterFail = false;
+        boolean retryCounted = false;
         while (true) {
             long left = nextFrameTime - before;
             if (left <= SPIN_WINDOW_NS) {
@@ -462,7 +509,12 @@ public class FrameLimiter {
                 continue;
             }
             // Başarısız denemeden sonraki bu çağrı işe yaradı: faydayı kaydet.
-            if (retriedAfterFail) {
+            // Yalnız İLK başarılı çağrı sayılır. Kalan başarılı çağrılar da
+            // gerçekten faydalıdır ama "retry'in tutma oranı" onları içermez —
+            // tek bir karede 3 başarılı çağrı, 1 denenen retry'den daha fazla
+            // "faydalı" sayılırsa oran %100'ü geçer.
+            if (retriedAfterFail && !retryCounted) {
+                retryCounted = true;
                 retryAfterFailSleptCalls++;
                 retryAfterFailSleptNs += elapsed;
             }

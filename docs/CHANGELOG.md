@@ -2,6 +2,84 @@
 
 Bu dosya sürüm tarihçesini tutar. Biçim: [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/).
 
+## 1.6.0 — 2026-10-05
+
+Taban koşusunu ("mod kapalıyken oyun ne kadar iyi") **ölçülebilir** hâle getirir ve
+karışık oturumu raporun kendisi geçersiz ilan eder. Üretim davranışı değişmiyor.
+
+### Düzeltilen — sayaç
+
+- **"Faydalı retry" oranı %100'ü geçiyordu.** Gerçek bir koşuda rapor
+  `665/646 faydalı (%102,9)` dedi; bu matematiksel olarak imkânsız. Sebep: başarısız
+  denemeden sonraki *her* başarılı çağrı sayılıyordu, karede tek retry olsa bile.
+  Artık **yalnız ilk** faydalı çağrı sayılıyor.
+  - Bu, daha önce okunan iki oranı da (`%81,6` ve `%75,3`) şişiriyordu. Karar yine
+    doğruydu — spin ölçümü retry'in işe yaradığını gösteriyor — ama sayı "retry ne
+    kadar tuttu" değildi.
+
+### Düzeltilen — etiketler
+
+- **Başlık monitör hızını yazıyordu, sınırlayıcının hedefini değil.** Elle 30 FPS
+  sınırı varken "hedef 60 Hz" diyordu. Artık ikisi ayrı: `sınırlayıcı hedefi 50 Hz ·
+  panel 60 Hz`, sınırsızda `SINIRSIZ`.
+- **`Sodium slider: var/yok` yanlış bilgi veriyordu.** Alan aslında
+  `sync || !sodiumPresent` idi: sync kapalıyken "yok" diyordu, slider gayet iyi olsa
+  bile; sync açıkken "var" diyordu, slider hiç uygulanmamış olsa bile. Gerçek
+  enjeksiyon durumu (`sliderInjected`) hiç raporlanmıyordu. Artık gerçek durum
+  yazılıyor: `uygulandı` / `uygulanmadı`.
+
+### Yeni — boşta rejim ölçümleri
+
+Taban koşusu sınırlayıcı **çalışmadığı** rejimde toplanır. Veri zaten dolduruluyordu
+(kare süresi histogramı her kare için her iki rejimde de yazılıyor) ama erişimciler
+yalnız bekleyen rejimi okuduğu için rapor burayı tek satırla geçiyordu:
+`ortalama kare süresi 40.38 ms`. Artık boşta rejimde de:
+
+- `1% low · 0.1% low (p99 · p99.9)` — "mod kapalıyken pürüzsüzlük ne"
+- `swap` ortalaması, en kötüsü, bütçe yüzdesi
+- `swap × geç kalma` çapraz tablosu ve GPU hükmü
+
+**Bu olmadan taban koşusu karar vermeye yetmiyordu.**
+
+### Yeni — GEÇERSİZ OTURUM uyarısı
+
+Gerçek bir koşu: ilk ~25 saniye FPS Sync (oyun ~60 FPS), sonra sınırsız (oyun ~25 FPS).
+Rapor `gerçek FPS 31,0` dedi — iki tamamen farklı iş yükünün ortalaması, yani hiçbir
+şey. Kullanıcı "sınırsız oynadım" diyordu, kayıtların çoğu sınırlayıcıyla toplanmıştı.
+
+Artık sınırlayıcı her karede fiilen hedefini çözüyor; hedef değişince sayaç artıyor ve
+rapor şunu basıyor:
+
+```
+⚠ GEÇERSİZ OTURUM — sınır durumu 1 kez değişti
+```
+
+Doğru koşu talimatı da raporun içinde: durumu değiştirme, tek koşuyu tamamla, sonra
+`/fpsync status`.
+
+### Bilinen sınır
+
+Çapraz tablo bir **iterasyon** kayması taşır: swap, `GameRenderer` TAIL'inden sonra
+gerçekleştiği için kare N'in gönderimiyle N'in sunumu farklı iterasyonlardır. Dağılım
+için bu bir kayma değildir — ikisi de aynı döngüde ölçülen olaydır — ama tek bir kare
+için neden-sonuç iddiası kurulamaz.
+
+### Doğrulama
+
+**239 test**, build + javadoc yeşil, **11 mutasyon kanıtlandı**.
+
+Dört mutasyon ilk denemede **kaçtı** ve üçü gerçek test boşluğuydu:
+- kanca bağlantısı hiç sınanmamıştı (test `bindTargetChangeListener`'ı *kendi*
+  çağırıyordu; `onInitializeClient`'daki çağrı silinse de geçiyordu)
+- hedef değişimi tespiti hiç sınanmamıştı
+- ilk karenin "değişim" sayılmadığı hiç sınanmamıştı
+- slider etiketi testi `sync` ve `slider` aynı değer olduğu için iki hatalı durumu
+  ayırt edemiyordu
+
+Kanca testi önce referans karşılaştırmasıyla yazıldı; bu da işe yaramadı çünkü
+`FpsSyncMod::onTargetChanged` her çağrıda yeni nesne üretir. Doğru sınama
+**davranışsal**: başlat, hedefi değiştir, kayıtçının saydığını gör.
+
 ## 1.5.0 — 2026-10-05
 
 Üretim davranışı **değişmiyor**; yalnız ölçüm ve raporlama. 1.4.0'ın ilk gerçek koşusunun

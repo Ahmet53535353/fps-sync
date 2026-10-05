@@ -101,6 +101,34 @@ public class FpsSyncMod implements ClientModInitializer {
     }
 
     /**
+     * Sınır durumu oturumda değişti: FPS Sync / elle sınır / sınırsız.
+     *
+     * <p>Kayıtçıya yazılır ki rapor oturumu <b>geçersiz</b> ilan edebilsin. Gerçek bir
+     * koşuda ilk 25 saniye FPS Sync (oyun ~60 FPS), sonra sınırsız (oyun ~25 FPS)
+     * toplandı; "gerçek FPS 31,0" ikisinin ortalamasıydı ve hiçbir anlamı yoktu.
+     *
+     * @param from önceki hedef; 0 sınırsız
+     * @param to   yeni hedef; 0 sınırsız
+     */
+    private static void onTargetChanged(int from, int to) {
+        PACING.recordStateChange();
+        LOGGER.info("FPS Sync hedefi değişti: {} -> {}. Bu oturumun ortalamaları "
+                        + "karşılaştırmada kullanılamaz.",
+                from == 0 ? "sınırsız" : from + " Hz",
+                to == 0 ? "sınırsız" : to + " Hz");
+    }
+
+    /**
+     * Durum değişimi kancasını bağlar.
+     *
+     * <p>{@code limitFrame} her karede çağrıldığı için kanca oyun başında bir kez
+     * kurulmalıdır; aksi halde sınırlayıcı hedefi değiştirdiğini kimse öğrenemez.
+     */
+    public static void bindTargetChangeListener() {
+        LIMITER.onTargetChanged = FpsSyncMod::onTargetChanged;
+    }
+
+    /**
      * Kare sonunda çağrılır; sınırlayıcının bu kareye ait sayaclarını toplar.
      *
      * <p>Sıcak yolda çalışır ve <b>sıfır ayak izi</b> bırakır (bkz.
@@ -143,6 +171,7 @@ public class FpsSyncMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         FpsSyncStatusCommand.register();
+        bindTargetChangeListener();
 
         ClientLifecycleEvents.CLIENT_STARTED.register(client -> {
             int value = client.options.getMaxFps().getValue();

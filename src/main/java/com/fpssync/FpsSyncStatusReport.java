@@ -31,20 +31,29 @@ public final class FpsSyncStatusReport {
     }
 
       /**
-       * Raporun tek kare anındaki girdisi. Saf veri: biçimlendirme burada olmaz.
-       *
-     * @param pacing       ölçüm kayıtçısı
-     * @param syncEnabled  FPS Sync açık mı
-     * @param monitorHz    algılanan monitör yenileme hızı
-     * @param windowW      pencere genişliği
-     * @param windowH      pencere yüksekliği
-     * @param modVersion   mod sürümü
-     * @param sodiumSlider FPS Sync girdisi Sodium ayarlarında görünüyor mu
-     * @param lastExitCode önceki koşunun çıkış kodu (0 = sorun yok)
+     * Raporun tek kare anındaki girdisi. Saf veri: biçimlendirme burada olmaz.
+     *
+     * @param pacing        ölçüm kayıtçısı
+     * @param syncEnabled   FPS Sync açık mı
+     * @param monitorHz     algılanan monitör yenileme hızı
+     * @param windowW       pencere genişliği
+     * @param windowH       pencere yüksekliği
+     * @param modVersion    mod sürümü
+     * @param sodiumSlider  Sodium karıştırması <b>gerçekten uygulandı</b> mı
+     * @param lastExitCode  önceki koşunun çıkış kodu (0 = sorun yok)
+     * @param limiterTarget sınırlayıcının fiilen hedeflediği FPS; 0 sınırsız
      */
     public record Snapshot(FramePacingRecorder pacing, boolean syncEnabled, int monitorHz,
                            int windowW, int windowH, String modVersion,
-                           boolean sodiumSlider, int lastExitCode) {
+                           boolean sodiumSlider, int lastExitCode, int limiterTarget) {
+
+        /** Gerçek hedefi bilmeyen çağıranlar için (hedef = monitör hızı). */
+        public Snapshot(FramePacingRecorder pacing, boolean syncEnabled, int monitorHz,
+                        int windowW, int windowH, String modVersion,
+                        boolean sodiumSlider, int lastExitCode) {
+            this(pacing, syncEnabled, monitorHz, windowW, windowH, modVersion,
+                    sodiumSlider, lastExitCode, monitorHz);
+        }
     }
 
     /**
@@ -63,15 +72,20 @@ public final class FpsSyncStatusReport {
         b.append("FPS Sync raporu\n");
         b.append("Mod ").append(s.modVersion())
                 .append("  ·  FPS Sync ").append(s.syncEnabled() ? "AÇIK" : "kapalı")
-                .append("  ·  hedef ").append(s.monitorHz()).append(" Hz (algılanan)\n");
+                .append("  ·  sınırlayıcı hedefi ")
+                .append(s.limiterTarget() == 0 ? "SINIRSIZ" : s.limiterTarget() + " Hz")
+                .append("  ·  panel ").append(s.monitorHz()).append(" Hz\n");
         b.append("Pencere ").append(s.windowW()).append('x').append(s.windowH())
-                .append("  ·  Sodium slider: ").append(s.sodiumSlider() ? "var" : "yok")
+                .append("  ·  Sodium slider: ")
+                .append(s.sodiumSlider() ? "uygulandı" : "uygulanmadı")
                 .append('\n');
 
         if (total == 0) {
             b.append("\nHenüz kare kaydedilmedi. Oyunu biraz oyna, sonra tekrar dene.\n");
             return b.toString();
         }
+
+        appendInvalidSessionWarning(b, r);
 
         b.append("\n■ BEKLEYEN KARE (sınırlayıcı aktif) — ").append(active).append(" kare\n");
         if (active == 0) {
@@ -129,6 +143,7 @@ public final class FpsSyncStatusReport {
         } else {
             b.append("  ortalama kare süresi ").append(ms(r.idleElapsedNs() / idle)).append('\n');
             b.append("  not: oyun hedefe ulaşmadığı için sınırlayıcı hiç beklemedi.\n");
+            appendIdleMeasurements(b, r);
         }
 
 b.append("\nÖZET\n");
@@ -188,6 +203,69 @@ b.append("\nÖZET\n");
       }
 
     /**
+     * Oturumda sınır durumu değiştiyse <b>GEÇERSİZ OTURUM</b> bildirir.
+     *
+     * <h2>Neden</h2>
+     * Gerçek bir koşuda ilk 25 saniye FPS Sync (oyun ~60 FPS), sonra sınırsız (oyun
+     * ~25 FPS) toplandı. Rapor {@code gerçek FPS 31,0} dedi — iki tamamen farklı iş
+     * yükünün ortalaması, yani <b>hiçbir şey</b>. Kullanıcı "sınırsız oynadım"
+     * diyordu ama kayıtların çoğu sınırlayıcıyla toplanmıştı.
+     *
+     * <p>İki rejimin sayıları ayrı ayrı geçerlidir; geçersiz olan <em>ÖZET
+     * ortalamalarıdır</em>. Uyarı bunu raporun kendisi söyler, çünkü bu tuzak üç
+     * koşuyu karşılaştırmaya çalışırken bir daha karşımıza çıkacak.
+     */
+    private static void appendInvalidSessionWarning(StringBuilder b, FramePacingRecorder r) {
+        long changes = r.stateChanges();
+        if (changes <= 0) {
+            return;
+        }
+        b.append("\n⚠ GEÇERSİZ OTURUM — sınır durumu ").append(changes).append(" kez değişti\n");
+        b.append("  FPS Sync / elle sınır / sınırsız arasında geçiş yapılmış. İki rejimin sayıları\n");
+        b.append("  ayrı ayrı geçerli ama ÖZET'teki ortalamalar farklı iş yüklerini karıştırır.\n");
+        b.append("  Doğru koşu: durumu değiştirme, tek koşuyu tamamla, sonra /fpsync status.\n");
+    }
+
+    /**
+     * Boşta (sınırlayıcı çalışmadı) rejimin ölçümleri.
+     *
+     * <p><b>Neden ayrı yazılıyor.</b> Taban koşusu bu rejimde toplanır: "mod kapalıyken
+     * oyun ne kadar iyi" sorusunun cevabı buradan gelir. Veri zaten dolduruluyordu —
+     * kare süresi histogramı her kare için her iki rejimde de yazılıyor — ama
+     * erişimciler yalnız bekleyen rejimi okuduğu için rapor burayı tek satırla
+     * geçiyordu. Soruyu ölçememek, cevaplamamanın en pahalı biçimi.
+     */
+    private static void appendIdleMeasurements(StringBuilder b, FramePacingRecorder r) {
+        if (r.idleFrameTimeCount() > 0) {
+            double fps1 = r.idleFps1Low();
+            double fps01 = r.idleFps01Low();
+            b.append("  1% low       ");
+            if (fps1 <= 0.0) {
+                b.append("çözülemedi");
+            } else {
+                b.append(num(fps1, 1)).append(" FPS  ·  0.1% low ").append(num(fps01, 1))
+                        .append("  (p99 ").append(ms(r.idleFrameTimePercentileNs(0.99)))
+                        .append(" · p99.9 ").append(ms(r.idleFrameTimePercentileNs(0.999)))
+                        .append(')');
+            }
+            b.append("  ·  ").append(r.idleFrameTimeCount()).append(" kare\n");
+        }
+        if (r.idleSwapEntries() > 0) {
+            long budget = r.activeBudgetNs();
+            long avg = r.idleSwapNsTotal() / r.idleSwapEntries();
+            b.append("  swap         ortalama ").append(us(avg));
+            if (budget > 0) {
+                b.append("  (bütçenin ").append(percentOf(avg, budget)).append(')');
+            }
+            b.append("  ·  en kötü ").append(ms(r.idleSwapMaxNs()))
+                    .append("  ·  ").append(r.idleSwapEntries()).append(" ölçüm\n");
+            b.append(swapCrossTabLine(r,
+                    r.idleSwapLateEntries(), r.idleSwapLateNsTotal(),
+                    r.idleSwapOnTimeEntries(), r.idleSwapOnTimeNsTotal(), budget));
+        }
+    }
+
+    /**
      * İlk {@link FramePacingRecorder#EARLY_WINDOW_NS} dakikanın özeti.
      *
      * <p>Koşular arasındaki farkı ölçülebilir kılan sabit pencere. Toplamlar
@@ -197,8 +275,7 @@ b.append("\nÖZET\n");
      * <p>Kısa oturumlarda pencere oluşmamıştır; o durumda uydurma değer basılmaz,
      * yalnızca ne kadar oynandığı yazılır.
      */
-    private static void appendEarlyWindow(StringBuilder b, FramePacingRecorder r) {
-          FramePacingRecorder.Totals e = r.earlyWindowTotals();
+    private static void appendEarlyWindow(StringBuilder b, FramePacingRecorder r) {          FramePacingRecorder.Totals e = r.earlyWindowTotals();
           b.append('\n');
           if (e == null) {
               long sec = r.elapsedNs() / 1_000_000_000L;
@@ -467,12 +544,29 @@ b.append("\nÖZET\n");
      * @param budget hedef kare bütçesi; 0 ise yüzde atlanır
      */
     private static String swapCrossTabLine(FramePacingRecorder r, long budget) {
-        long lateN = r.activeSwapLateEntries();
-        long onTimeN = r.activeSwapOnTimeEntries();
+        return swapCrossTabLine(r,
+                r.activeSwapLateEntries(), r.activeSwapLateNsTotal(),
+                r.activeSwapOnTimeEntries(), r.activeSwapOnTimeNsTotal(), budget);
+    }
+
+    /**
+     * Swap'ın geç kalma ile çapraz tablosu — verilen sayaçlardan.
+     *
+     * <p>İki rejim için de aynı biçim: bekleyen ve boşta. Yalnız sayılar farklı
+     * kaynaktan gelir.
+     *
+     * @param lateN geç karelerdeki swap ölçüm sayısı
+     * @param lateNs geç karelerdeki swap süresi toplamı
+     * @param onTimeN zamanındaki karelerdeki swap ölçüm sayısı
+     * @param onTimeNs zamanındaki karelerdeki swap süresi toplamı
+     * @param budget hedef kare bütçesi; 0 ise yüzde atlanır
+     */
+    private static String swapCrossTabLine(FramePacingRecorder r, long lateN, long lateNs,
+            long onTimeN, long onTimeNs, long budget) {
         StringBuilder b = new StringBuilder(128);
         b.append("               geç karelerde");
         if (lateN > 0) {
-            long lateAvg = r.activeSwapLateNsTotal() / lateN;
+            long lateAvg = lateNs / lateN;
             b.append(' ').append(us(lateAvg));
             if (budget > 0) {
                 b.append("  (").append(percentOf(lateAvg, budget)).append(')');
@@ -483,7 +577,7 @@ b.append("\nÖZET\n");
         }
         b.append("  ·  zamanında");
         if (onTimeN > 0) {
-            long onTimeAvg = r.activeSwapOnTimeNsTotal() / onTimeN;
+            long onTimeAvg = onTimeNs / onTimeN;
             b.append(' ').append(us(onTimeAvg));
             if (budget > 0) {
                 b.append("  (").append(percentOf(onTimeAvg, budget)).append(')');
@@ -493,8 +587,8 @@ b.append("\nÖZET\n");
             b.append(" yok");
         }
         if (lateN > 0 && onTimeN > 0 && budget > 0) {
-            long lateAvg = r.activeSwapLateNsTotal() / lateN;
-            long onTimeAvg = r.activeSwapOnTimeNsTotal() / onTimeN;
+            long lateAvg = lateNs / lateN;
+            long onTimeAvg = onTimeNs / onTimeN;
             // Hüküm yalnız iki taraf da doluyken. Eşikler: oran 2'den büyük VE geç
             // karelerdeki pay en az %15. İkisi de tutmazsa GPU'yu suçlamak ölçümün
             // verdiğini aşmak olurdu.
