@@ -199,7 +199,7 @@ class SwapTimeTest {
         }
 
         String text = FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
 
         assertTrue(text.contains("swap"),
                 "rapor swap satırını yazmalı, alınan:\n" + text);
@@ -225,7 +225,7 @@ class SwapTimeTest {
         }
 
         String text = FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
 
         assertTrue(text.contains("12.78 ms"),
                 "en kötü yine de görünmeli — bilgi kaybı yok, alınan:\n" + text);
@@ -243,7 +243,7 @@ class SwapTimeTest {
         }
 
         String text = FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
 
         assertTrue(text.contains("swap"), "satır yine de görünmeli");
         assertTrue(text.contains("ölçülmedi"),
@@ -260,7 +260,7 @@ class SwapTimeTest {
         }
 
         String text = FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
 
         assertTrue(text.contains("GPU etkisiz"),
                 "200 µs'lik swap bütçenin %1'i, darboğaz değildir, alınan:\n" + text);

@@ -92,12 +92,55 @@ public class FpsSyncMod implements ClientModInitializer {
     }
 
     /**
+     * Slider'ın <b>ölçülmüş</b> durumu.
+     *
+     * <p>Rapor bu değeri okur. Eskiden {@code sync || !SodiumPresence.isPresent()} gibi
+     * türetilmiş bir değer geçiliyordu; bu ifade FPS Sync açıkken <b>her koşuda</b>
+     * "uygulandı" üretiyordu — Sodium kurulu bile olmasa. Gerçek sinyal
+     * ({@link #sliderInjected}) zaten toplanıyordu, sadece okunmuyordu.
+     *
+     * <p>Bu metot saf: testler sinyalin her kombinasyonunu enjekte edebilsin diye
+     * parametre alır. Üretim yolu {@link #sliderStatus()} kullanır.
+     *
+     * @param sodiumPresent  Sodium kurulu mu
+     * @param mixinApplied   {@code SodiumFpsLimitMixin} hedefe uygulandı mı
+     * @return üç durumdan biri
+     */
+    public static SodiumSliderStatus sliderStatus(boolean sodiumPresent, boolean mixinApplied) {
+        return SodiumSliderStatus.decide(sodiumPresent, mixinApplied);
+    }
+
+    /**
+     * Gerçek slider durumu: kurulu mu ve karıştırma uygulandı mı.
+     *
+     * @return ölçülmüş durum
+     */
+    public static SodiumSliderStatus sliderStatus() {
+        return sliderStatus(SODIUM_PRESENT, sliderInjected);
+    }
+
+    /**
      * Ölçüm kaydı.
      *
      * @return oyun başlangıcından beri biriken kare zamanlaması kaydı
      */
     public static FramePacingRecorder pacing() {
         return PACING;
+    }
+
+    /**
+     * Kare süresi tabanını sıfırlar.
+     *
+     * <p>{@link FramePacingRecorder#reset()} histogramları temizler ama taban
+     * {@link FpsSyncMod} içinde durur. Sıfırlamadan sonraki ilk kare, aradaki boşluğun
+     * tamamını kare süresi olarak yutar: {@code /fpsync status} → oyunu kapat → geri aç
+     * akışında "İLK 10 DAKİKA — kare 1" yazıyordu.
+     *
+     * <p>Sıfırlamayla <b>aynı anda</b> çağrılmalıdır: {@code FramePacingRecorder.reset()}
+     * sonrası bu çağrı yapılmazsa bir sonraki kare boşluğu yutar.
+     */
+    public static void resetFrameTimeBase() {
+        lastFrameNsBase = 0;
     }
 
     /**

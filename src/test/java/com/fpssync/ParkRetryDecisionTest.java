@@ -72,7 +72,7 @@ class ParkRetryDecisionTest {
 
     private static FpsSyncStatusReport.Snapshot snapshot(FramePacingRecorder r) {
         return new FpsSyncStatusReport.Snapshot(r, true, 60, 1920, 1080,
-                "1.3.0+1.21.1", true, 0);
+                "1.3.0+1.21.1", SodiumSliderStatus.MIXIN_APPLIED, 0);
     }
 
     @Test

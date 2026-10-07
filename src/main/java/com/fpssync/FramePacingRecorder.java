@@ -138,8 +138,6 @@ public final class FramePacingRecorder {
         long swapOnTimeEntries;
         /** Görülen ilk kare bütçesi; swap yüzdesini bu bütçeye göre vermek için. */
         long budgetNs;
-        /** Oturumda sınır durumu kaç kez değişti (FPS Sync / elle / sınırsız). */
-        long stateChanges;
         final int[] frameTime = new int[FRAME_TIME_BUCKETS];
         long latenessMaxNs;
 long parkCalls;
@@ -189,7 +187,6 @@ long parkCalls;
             swapOnTimeNsTotal = other.swapOnTimeNsTotal;
             swapOnTimeEntries = other.swapOnTimeEntries;
             budgetNs = other.budgetNs;
-            stateChanges = other.stateChanges;
             latenessMaxNs = other.latenessMaxNs;
             parkCalls = other.parkCalls;
             parkNsTotal = other.parkNsTotal;
@@ -230,7 +227,6 @@ long parkCalls;
             swapOnTimeNsTotal = 0;
             swapOnTimeEntries = 0;
             budgetNs = 0;
-            stateChanges = 0;
             latenessMaxNs = 0;
             parkCalls = 0;
             parkNsTotal = 0;
@@ -611,10 +607,12 @@ long parkCalls;
                 a.interruptFlagFrames, a.interruptsCaught,
                 a.parkRetryAfterFailCalls, a.parkRetryAfterFailSleptCalls,
                 a.parkRetryAfterFailSleptNs, a.swapNsTotal, a.swapEntries, a.swapMaxNs,
-                // Oturum düzeyindeki sayaç: erken pencere için `stateChangeCount`'in
-                // o andaki değeri kullanılır, çünkü geçmişteki değişimler o pencereye
-                // ait değildir. Rejim sayaçları geriye dönük kalır.
-                Math.max(stateChangeCount, a.stateChanges + i.stateChanges),
+                // Oturum düzeyindeki sayaç. Rejim sayaçları TOTALLARDA kullanılmaz:
+                // değişim kare yazılmadan bildirilir, hangi rejime yazılacağı o
+                // anda bilinmez. İlk denemede Math.max(stateChangeCount, a + i)
+                // yazılmıştı; iki farklı kapsamı karşılaştırdığı için erken
+                // pencerede (Regime kopyaları) yanlış değer döndürüyordu.
+                stateChangeCount,
                 i.frameTimeCount, i.swapLateEntries, i.swapOnTimeEntries);
     }
 
@@ -902,6 +900,20 @@ long parkCalls;
     /** @return sınırlayıcı çalışmadığı kare sayısı */
     public long idleFrameTimeCount() {
         return idle.frameTimeCount;
+    }
+
+    /**
+     * Boşta rejimde kare süresi histogramının taştığı kare sayısı (üst sınır 64 ms).
+     *
+     * <p>Aktif rejimin karşılığı ({@link #activeFrameTimeOverflow()}) raporda
+     * yazılıyor; bu erişimci de öyle olmalı. Aksi halde kullanıcı
+     * {@code 0.1% low çözülemedi} görüp <em>nedeni</em> arıyor ama hiçbir yerde
+     * kaç karenin histogramın dışında kaldığı yazmıyor.
+     *
+     * @return taşan kare sayısı
+     */
+    public long idleFrameTimeOverflow() {
+        return idle.frameTimeOverflow;
     }
 
     /** @return boşta rejimde 1% low FPS; örnek yoksa 0 */

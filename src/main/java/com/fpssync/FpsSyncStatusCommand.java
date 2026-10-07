@@ -67,6 +67,10 @@ public final class FpsSyncStatusCommand {
         try {
             if (resetOnly) {
                 pacing.reset();
+                // Kare süresi tabanı FpsSyncMod'da; sıfırlanmazsa bir sonraki kare
+                // aradaki boşluğu (oyun kapatıldıysa saatlerce) kare süresi sayar ve
+                // "İLK 10 DAKİKA — kare 1" raporu yazar.
+                FpsSyncMod.resetFrameTimeBase();
                 source.sendFeedback(Text.literal("FPS Sync: sayaçlar sıfırlandı."));
                 return 1;
             }
@@ -76,6 +80,7 @@ public final class FpsSyncStatusCommand {
 
             if (!keepCounters) {
                 pacing.reset();
+                FpsSyncMod.resetFrameTimeBase();
             }
 
             source.sendFeedback(Text.literal(summary(report, written, clipboard)));
@@ -97,7 +102,9 @@ public final class FpsSyncStatusCommand {
         return FpsSyncStatusReport.render(new FpsSyncStatusReport.Snapshot(
                 pacing, sync, hz, w, h,
                 ModVersion.resolve(),
-                sync || !SodiumPresence.isPresent(),
+                // Ölçülmüş durum: Sodium kurulu mu ve slider karıştırması
+                // uygulandı mı. Eskiden türetilmiş bir boolean geçiliyordu.
+                FpsSyncMod.sliderStatus(),
                 // Sabit 0 geçiliyordu; rapor bunu "SINIRSIZ" olarak yazıyordu
                 // her koşuda. Gerçek çözülmüş hedef okunur (0 = sınırsız).
                 FpsSyncMod.LIMITER.resolvedTargetFps()));

@@ -1,6 +1,7 @@
 package com.fpssync;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.DisplayName;
@@ -35,7 +36,7 @@ class HonestSessionTest {
 
     private static String render(FramePacingRecorder r) {
         return FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.6.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.6.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
     }
 
     // ------------------------------------------------------------------ 1
@@ -239,12 +240,39 @@ class HonestSessionTest {
                     0L, 0L, 0, 0, 0L, 1_500_000L, 1, 1_500_000L);
         }
 
-        // Sync kapalı ama slider GERÇEKTEN uygulanmamış: eski sürüm "var" derdi.
+// Sync kapalı ama slider GERÇEKTEN uygulanmamış: eski sürüm "var" derdi.
         String text = FpsSyncStatusReport.render(
                 new FpsSyncStatusReport.Snapshot(r, false, 60, 1366, 768, "1.6.0",
-                        false, 0, 0));
+                        SodiumSliderStatus.MIXIN_NOT_APPLIED, 0, 0));
 
-        assertTrue(text.contains("Sodium slider: uygulanmadı"),
+        // 1.8.0: üç durum ayrışıyor. Arıza artık sessiz "uygulanmadı" değil,
+        // kullanıcıya ne yapması gerektiğini söyleyen bir satır.
+        assertTrue(text.contains("Sodium slider: UYGULANMADI"),
                 "sync kapalı olması slider'ın var olduğu anlamına gelmez, alınan:\n" + text);
+    }
+
+    @Test
+    @DisplayName("Sodium kurulu değilken slider satırı arıza gibi görünmemeli")
+    void absentSodiumIsNotReportedAsFailure() {
+        FramePacingRecorder r = new FramePacingRecorder();
+        for (int i = 0; i < 100; i++) {
+            r.recordFrame(B, B, true, 1, B - 100_000L, 80_000L, 0L, B - 100_000L,
+                    0L, 0L, 0, 0, 0L, 1_500_000L, 1, 1_500_000L);
+        }
+
+        String text = FpsSyncStatusReport.render(
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.8.0",
+                        SodiumSliderStatus.SODIUM_ABSENT, 0, 60));
+
+        String line = null;
+        for (String candidate : text.split("\n")) {
+            if (candidate.contains("Sodium slider")) {
+                line = candidate;
+            }
+        }
+        assertTrue(line != null && line.contains("gerekmiyor"),
+                "Sodium yokken slider'ın görünmemesi beklenen durumdur, alınan:\n" + line);
+        assertFalse(line.contains("UYGULANMADI"),
+                "Sodium yokken arıza uyarısı yazmamalı:\n" + line);
     }
 }

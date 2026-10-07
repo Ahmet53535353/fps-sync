@@ -31,7 +31,7 @@ class FpsSyncStatusReportTest {
             r.recordFrame(BUDGET_NS + 500_000, BUDGET_NS, true, 1, 16_500_000, 96_000, 4_400);
         }
         return new FpsSyncStatusReport.Snapshot(r, true, 60, 1920, 1080, "1.1.0+1.21.1",
-                true, 0);
+                SodiumSliderStatus.MIXIN_APPLIED, 0);
     }
 
     @Test
@@ -91,7 +91,7 @@ class FpsSyncStatusReportTest {
     void emptyReportIsGraceful() {
         FramePacingRecorder empty = new FramePacingRecorder();
         String out = FpsSyncStatusReport.render(new FpsSyncStatusReport.Snapshot(
-                empty, false, 60, 0, 0, "1.1.0+1.21.1", false, 0));
+                empty, false, 60, 0, 0, "1.1.0+1.21.1", SodiumSliderStatus.MIXIN_NOT_APPLIED, 0));
 
         assertFalse(out.contains("NaN"), "NaN üretilmemeli");
         assertFalse(out.contains("Infinity"), "Infinity üretilmemeli");
@@ -120,7 +120,7 @@ class FpsSyncStatusReportTest {
         r.recordFrame(BUDGET_NS, BUDGET_NS, true, 1, 1_000_000, 0, 0);
 
         String out = FpsSyncStatusReport.render(new FpsSyncStatusReport.Snapshot(
-                r, true, 144, 2560, 1440, "1.1.0+1.21.1", true, 0));
+                r, true, 144, 2560, 1440, "1.1.0+1.21.1", SodiumSliderStatus.MIXIN_APPLIED, 0));
 
         assertTrue(out.length() > 0);
     }

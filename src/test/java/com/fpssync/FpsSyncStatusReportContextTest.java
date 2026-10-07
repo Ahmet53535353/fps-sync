@@ -40,7 +40,7 @@ class FpsSyncStatusReportContextTest {
 
     private static String render(FramePacingRecorder r) {
         return FpsSyncStatusReport.render(new FpsSyncStatusReport.Snapshot(
-                r, true, 60, 1366, 768, "1.2.0+1.21.1", true, 0));
+                r, true, 60, 1366, 768, "1.2.0+1.21.1", SodiumSliderStatus.MIXIN_APPLIED, 0));
     }
 
     @Test

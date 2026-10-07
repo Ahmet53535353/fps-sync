@@ -216,7 +216,7 @@ class FrameTimeLowTest {
         FramePacingRecorder r = recorderWith(frames);
 
         String text = FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.3.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
 
         assertTrue(text.contains("1% low"),
                 "rapor 1% low yazmalı, alınan:\n" + text);

@@ -39,20 +39,36 @@ public final class FpsSyncStatusReport {
      * @param windowW       pencere genişliği
      * @param windowH       pencere yüksekliği
      * @param modVersion    mod sürümü
-     * @param sodiumSlider  Sodium karıştırması <b>gerçekten uygulandı</b> mı
+     * @param sliderStatus  Sodium slider'ının <b>ölçülmüş</b> durumu
      * @param lastExitCode  önceki koşunun çıkış kodu (0 = sorun yok)
      * @param limiterTarget sınırlayıcının fiilen hedeflediği FPS; 0 sınırsız
      */
     public record Snapshot(FramePacingRecorder pacing, boolean syncEnabled, int monitorHz,
                            int windowW, int windowH, String modVersion,
-                           boolean sodiumSlider, int lastExitCode, int limiterTarget) {
+                           SodiumSliderStatus sliderStatus, int lastExitCode, int limiterTarget) {
 
         /** Gerçek hedefi bilmeyen çağıranlar için (hedef = monitör hızı). */
         public Snapshot(FramePacingRecorder pacing, boolean syncEnabled, int monitorHz,
                         int windowW, int windowH, String modVersion,
-                        boolean sodiumSlider, int lastExitCode) {
+                        SodiumSliderStatus sliderStatus, int lastExitCode) {
             this(pacing, syncEnabled, monitorHz, windowW, windowH, modVersion,
-                    sodiumSlider, lastExitCode, monitorHz);
+                    sliderStatus, lastExitCode, monitorHz);
+        }
+
+        /**
+         * Durumu bilmeyen çağıranlar için.
+         *
+         * @deprecated slider durumu artık üç değerlidir; {@code boolean} ile
+         *     temsil etmek "Sodium yok" ile "slider uygulanmadı" ayrımını
+         *     kaybediyordu. {@link SodiumSliderStatus} kullan.
+         */
+        @Deprecated
+        public Snapshot(FramePacingRecorder pacing, boolean syncEnabled, int monitorHz,
+                        int windowW, int windowH, String modVersion,
+                        boolean sodiumSlider, int lastExitCode, int limiterTarget) {
+            this(pacing, syncEnabled, monitorHz, windowW, windowH, modVersion,
+                    sodiumSlider ? SodiumSliderStatus.MIXIN_APPLIED : SodiumSliderStatus.MIXIN_NOT_APPLIED,
+                    lastExitCode, limiterTarget);
         }
     }
 
@@ -77,7 +93,7 @@ public final class FpsSyncStatusReport {
                 .append("  ·  panel ").append(s.monitorHz()).append(" Hz\n");
         b.append("Pencere ").append(s.windowW()).append('x').append(s.windowH())
                 .append("  ·  Sodium slider: ")
-                .append(s.sodiumSlider() ? "uygulandı" : "uygulanmadı")
+                .append(sliderLine(s.sliderStatus()))
                 .append('\n');
 
         if (total == 0) {
@@ -92,10 +108,19 @@ public final class FpsSyncStatusReport {
             b.append("  sınırlayıcı hiç beklemedi; oyun hedefe hiç ulaşmadı.\n");
         } else {
             double latePct = 100.0 * r.activeLateFrames() / active;
-            b.append("  gecikme     medyan ").append(ms(r.activeLatenessMedianNs()))
-                    .append(" · p95 ").append(ms(r.activeLatenessPercentileNs(0.95)))
-                    .append(" · p99 ").append(ms(r.activeLatenessPercentileNs(0.99)))
-                    .append(" · en kötü ").append(ms(r.activeLatenessMaxNs())).append('\n');
+            // value(), ms() değil: yüzdelik doygunlaştığında SATURATED (-1) dönüyor
+            // ve ms() onu "-0.00 ms" olarak basıyordu — rapor NEGATİF SÜRE gösterdi.
+            // Park aşımı satırı bu hatayı yaşamış, value() ile düzeltilmişti.
+            b.append("  gecikme     medyan ").append(valueMs(r.activeLatenessMedianNs()))
+                    .append(" · p95 ").append(valueMs(r.activeLatenessPercentileNs(0.95)))
+                    .append(" · p99 ").append(valueMs(r.activeLatenessPercentileNs(0.99)))
+                    .append(" · en kötü ").append(ms(r.activeLatenessMaxNs()));
+            if (latenessSaturated(r)) {
+                b.append(" (dağılım ölçüm aralığının dışında");
+                appendOverflowNote(b, r.activeLatenessOverflowFrames(), " kare 50 ms üstü");
+                b.append(')');
+            }
+            b.append('\n');
             b.append("  geç kare    ").append(percent(latePct))
                     .append("  (").append(r.activeLateFrames()).append(" kare)\n");
             if (r.activeParkCalls() > 0) {
@@ -109,8 +134,6 @@ public final class FpsSyncStatusReport {
                 b.append("  park aşımı  ").append(overshootLine(r)).append('\n');
                 appendInterruptLine(b, r);
                 b.append(retryLine(r));
-                b.append(fpsLowLine(r));
-                b.append(swapLine(r));
                 b.append("               dağılım ")
                         .append(r.activeOvershootLateCalls()).append(" geç dönüş üzerinden")
                         .append(", ").append(r.activeParkEarlyCalls())
@@ -135,6 +158,12 @@ public final class FpsSyncStatusReport {
                         .append(" · spin eden kare başına ")
                         .append(us(r.activeSpinNsTotal() / r.activeSpinEntries())).append('\n');
             }
+            // Kare süresi ve swap ölçümleri park bloğunun DIŞINDA: park yapılmayan
+            // koşuda (oyun hedefe hiç ulaşmadı) bu satırlar hiç yazılmıyordu,
+            // oysa kare süresi histogramı doluydu. 2000 kare ölçülmüşken rapor
+            // 1% low'u hiç basmıyordu. Ölçülen veri park'ın yokluğuyla kaybolmaz.
+            b.append(fpsLowLine(r));
+            b.append(swapLine(r));
         }
 
         b.append("\n■ BEKLEME YAPILMAYAN KARE (sınırlayıcı boşta) — ").append(idle).append(" kare\n");
@@ -243,12 +272,29 @@ b.append("\nÖZET\n");
             if (fps1 <= 0.0) {
                 b.append("çözülemedi");
             } else {
-                b.append(num(fps1, 1)).append(" FPS  ·  0.1% low ").append(num(fps01, 1))
-                        .append("  (p99 ").append(ms(r.idleFrameTimePercentileNs(0.99)))
-                        .append(" · p99.9 ").append(ms(r.idleFrameTimePercentileNs(0.999)))
+                b.append(num(fps1, 1)).append(" FPS  ·  0.1% low ");
+                // fps01 çözülememişse sayı basma: fpsFromFrameTime(SATURATED) 0.0
+                // döndürür ve "ölçülemedi" yerine "0.0 FPS" yazılırdı. Aktif rejimdeki
+                // fpsLowLine bu kontrolü yapıyor, boşta taraf yapmıyordu — aynı veri
+                // iki farklı biçimde basılıyordu.
+                if (fps01 <= 0.0) {
+                    b.append("çözülemedi");
+                } else {
+                    b.append(num(fps01, 1));
+                }
+                b.append("  (p99 ").append(ms(r.idleFrameTimePercentileNs(0.99)))
+                        .append(" · p99.9 ").append(valueMs(r.idleFrameTimePercentileNs(0.999)))
                         .append(')');
             }
-            b.append("  ·  ").append(r.idleFrameTimeCount()).append(" kare\n");
+            b.append("  ·  ").append(r.idleFrameTimeCount()).append(" kare");
+            // Doygunluğun kanıtı. Aktif tarafta bu yazılıyor, boşta tarafta
+            // yazılmıyordu: "0.1% low çözülemedi" görüp nedenini arayacak sayı yoktu.
+            long idleOverflow = r.idleFrameTimeOverflow();
+            if (idleOverflow > 0) {
+                b.append(", ").append(idleOverflow)
+                        .append(" kare 64 ms üstü (yüzdelik çözülemedi)");
+            }
+            b.append('\n');
         }
         if (r.idleSwapEntries() > 0) {
             long budget = r.activeBudgetNs();
@@ -467,7 +513,7 @@ b.append("\nÖZET\n");
                 b.append(num(fps01, 1));
             }
             b.append("  (p99 ").append(ms(p99)).append(" · p99.9 ")
-                    .append(ms(p999)).append(')');
+                    .append(valueMs(p999)).append(')');
         }
         b.append("  ·  ").append(samples).append(" kare");
         if (overflow > 0) {
@@ -647,6 +693,54 @@ b.append("\nÖZET\n");
 
     private static String value(long ns) {
         return ns == FramePacingRecorder.SATURATED ? "ölçülemedi" : us(ns);
+    }
+
+    /**
+     * {@link #value(long)} gibi doygunluğu "ölçülemedi" yapar ama <b>milisaniye</b>
+     * basar.
+     *
+     * <p>Ayrı bir yardımcı: {@code value()} mikrosaniye birimindedir ve gecikme
+     * satırına olduğu gibi yazılırsa 0,15 µs'yi 0,00 ms diye gösterirdi.
+     */
+    private static String valueMs(long ns) {
+        return ns == FramePacingRecorder.SATURATED ? "ölçülemedi" : ms(ns);
+    }
+
+    /**
+ * Slider satırını üç durumdan üretir.
+ *
+ * <p>Eskiden tek bir {@code boolean} basılıyordu ve "uygulandı"/"uygulanmadı" diyordu.
+ * Üçüncü durum — <b>Sodium hiç kurulu değil</b> — kayboluyordu; o durumda slider'ın
+ * görünmemesi beklenen bir durumdur, arıza değil. Arıza yalnızca Sodium kuruluyken
+ * slider'ın görünmemesidir.
+ */
+private static String sliderLine(SodiumSliderStatus status) {
+        if (status == null) {
+            return "bilinmiyor";
+        }
+        switch (status) {
+            case SODIUM_ABSENT:
+                return "yok (Sodium kurulu değil, gerekmiyor)";
+            case MIXIN_APPLIED:
+                return "uygulandı";
+            case MIXIN_NOT_APPLIED:
+            default:
+                return "UYGULANMADI — Sodium ayarlarında slider görünmüyor";
+        }
+    }
+
+    /** Gecikme yüzdeliklerinden herhangi biri doygunlaştı mı. */
+    private static boolean latenessSaturated(FramePacingRecorder r) {
+        return r.activeLatenessMedianNs() == FramePacingRecorder.SATURATED
+                || r.activeLatenessPercentileNs(0.95) == FramePacingRecorder.SATURATED
+                || r.activeLatenessPercentileNs(0.99) == FramePacingRecorder.SATURATED;
+    }
+
+    /** Doygunluğun kanıtını yazar: kaç kare histogramın dışında kaldı. */
+    private static void appendOverflowNote(StringBuilder b, long overflow, String suffix) {
+        if (overflow > 0) {
+            b.append(", ").append(overflow).append(suffix);
+        }
     }
 
     /**

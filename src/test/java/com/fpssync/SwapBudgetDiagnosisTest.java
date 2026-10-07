@@ -66,7 +66,7 @@ class SwapBudgetDiagnosisTest {
 
     private static String render(FramePacingRecorder r) {
         return FpsSyncStatusReport.render(
-                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", true, 0));
+                new FpsSyncStatusReport.Snapshot(r, true, 60, 1366, 768, "1.5.0", SodiumSliderStatus.MIXIN_APPLIED, 0));
     }
 
     // ---------------------------------------------------------------- A
