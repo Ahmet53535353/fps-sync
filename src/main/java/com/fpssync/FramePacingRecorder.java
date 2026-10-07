@@ -276,6 +276,17 @@ long parkCalls;
     private long firstWaitAtNs = -1;
     private volatile boolean paused;
 
+    /**
+     * Oturumda sınır durumu kaç kez değişti — <b>oturum düzeyinde</b>, rejim
+     * düzeyinde değil.
+     *
+     * <p>Değişim, sınırlayıcı hedefi çözerken ({@code limitFrame}) ve henüz hiç kare
+     * yazılmadan bildirilir; hangi rejime yazılacağı o anda bilinemez. Rejim
+     * sayaçlarına yazılsaydı, hiç bekleyen kare içermeyen taban koşusunda sayım
+     * sıfırda kalır ve karışık oturum uyarısı tam da o koşullarda çalışmazdı.
+     */
+    private long stateChangeCount;
+
 /**
        * Park süresi ve kesinti teşhisi <b>ölçülmeden</b> kare kaydeder.
        *
@@ -593,14 +604,18 @@ long parkCalls;
         return earlyCaptured;
     }
 
-    private static Totals totalsOf(Regime a, Regime i, long elapsed) {
+    private Totals totalsOf(Regime a, Regime i, long elapsed) {
         return new Totals(elapsed, a.frames, i.frames, a.lateFrames,
                 a.spinNsTotal, a.spinEntries, a.parkCalls, a.parkNsTotal,
                 a.parkEarlyCalls, a.parkEarlyNsTotal,
                 a.interruptFlagFrames, a.interruptsCaught,
                 a.parkRetryAfterFailCalls, a.parkRetryAfterFailSleptCalls,
                 a.parkRetryAfterFailSleptNs, a.swapNsTotal, a.swapEntries, a.swapMaxNs,
-                a.stateChanges, i.frameTimeCount, i.swapLateEntries, i.swapOnTimeEntries);
+                // Oturum düzeyindeki sayaç: erken pencere için `stateChangeCount`'in
+                // o andaki değeri kullanılır, çünkü geçmişteki değişimler o pencereye
+                // ait değildir. Rejim sayaçları geriye dönük kalır.
+                Math.max(stateChangeCount, a.stateChanges + i.stateChanges),
+                i.frameTimeCount, i.swapLateEntries, i.swapOnTimeEntries);
     }
 
     /** Rapor üretimi sırasında ölçümü durdurmak için. */
@@ -632,6 +647,7 @@ long parkCalls;
         earlyCaptured = false;
         elapsedNs = 0;
         firstWaitAtNs = -1;
+        stateChangeCount = 0;
     }
 
     /** Geçen süreyi dışarıdan doğrular (testler ve saat kayması düzeltmesi). */
@@ -854,14 +870,25 @@ long parkCalls;
         return active.swapOnTimeNsTotal;
     }
 
-    /** Oturumda sınır durumu kaç kez değişti. */
+    /**
+     * Oturumda sınır durumu kaç kez değişti.
+     *
+     * <p>Rejim sayaçlarına yazılsaydı, hiç bekleyen kare içermeyen <b>taban
+     * koşusunda</b> sayım sıfırda kalır ve karışık oturum uyarısı tam da o
+     * koşullarda çalışmazdı. Oturum düzeyinde tutulur. Bkz.
+     * {@code UnlimitedRegimeRecordingTest}.
+     */
     public long stateChanges() {
-        return active.stateChanges;
+        return stateChangeCount;
     }
 
-    /** Durum değişimini kaydeder. Ana rejim altında toplanır. */
+    /**
+     * Durum değişimini kaydeder.
+     *
+     * <p>Sınırlayıcı hedefi çözerken, kare yazılmadan önce çağrılır.
+     */
     public void recordStateChange() {
-        active.stateChanges++;
+        stateChangeCount++;
     }
 
     // --- boşta (sınırlayıcı çalışmadı) rejim --------------------------------

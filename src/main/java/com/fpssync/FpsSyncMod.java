@@ -135,8 +135,11 @@ public class FpsSyncMod implements ClientModInitializer {
      * {@code FramePacingZeroAllocationTest}). Kare süresi için ek {@code nanoTime}
      * çağrısı yapılmaz: sınırlayıcı zaten bir tane okumuş, onun farkı kullanılır.
      *
-     * <p>Sınırlayıcı <b>kapalı</b>ysa hiçbir şey kaydedilmez — o durumda ölçülecek bir
-     * zamanlama yoktur.
+     * <p>Sınırlayıcı <b>kapalı</b> (sınırsız) iken de kayıt yazılır; bütçe 0 gelir ve
+     * kare boşta rejime düşer. Taban koşusu ("sınırlama olmadan oyun ne kadar iyi")
+     * tam olarak bu rejimdir: kapı bütçeye bakıyorken ölçüm hiç oluşmuyordu ve
+     * {@code /fpsync status} "Henüz kare kaydedilmedi" diyordu. Bkz.
+     * {@code UnlimitedRegimeRecordingTest}.
      */
     public static void recordFrameTiming() {
         FrameLimiter limiter = LIMITER;
@@ -149,7 +152,12 @@ public class FpsSyncMod implements ClientModInitializer {
         long swapMax = SWAP.maxNs();
         SWAP.reset();
 
-        if (budget > 0 && now > 0) {
+        // Bütçe 0 olabilir: sınırlayıcı kapalıyken (sınırsız) kare yine de kaydedilir,
+        // çünkü taban koşusu ancak o rejimde alınabilir. `budget` yalnızca gecikme
+        // ("hedefe yetişemedi") hesabının paydası; 0 iken lateness ölçülemez ama
+        // kare süresi histogramı dolmaya devam eder. Asıl kapı `now`'dur: zaman
+        // damgası okunmamışsa kare henüz sınırlayıcıdan geçmemiştir.
+        if (now > 0) {
             if (lastFrameNsBase > 0) {
                 long frameNs = now - lastFrameNsBase;
                 if (frameNs > 0) {

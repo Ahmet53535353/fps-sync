@@ -227,6 +227,20 @@ public class FrameLimiter {
 
     /** Son çözülen hedef FPS; 0 sınırsız. Durum değişimi için. */
     private int targetFpsLastFrame;
+
+    /**
+     * Son çözülen hedef FPS; 0 sınırsız.
+     *
+     * <p>Rapor başlığı bunu okur: "sınırlayıcı hedefi" alanı uzun süredir sabit
+     * {@code 0} geçiliyordu, yani her koşuda "SINIRSIZ" yazmalıydı — oysa gerçek
+     * koşul sınırsız olmayabilir. Sınırsızda da bu alan güncellenir (bkz.
+     * {@link #limitFrame()}), çünkü hedef orada da çözülür.
+     *
+     * @return çözülmüş hedef FPS, 0 sınırsız; henüz kare geçmediyse 0
+     */
+    int resolvedTargetFps() {
+        return targetFpsLastFrame;
+    }
     /** İlk çözümden sonra anlamlı; ilk kare "değişim" sayılmasın diye. */
     private boolean hasResolvedTarget;
 
@@ -399,7 +413,13 @@ public class FrameLimiter {
         // Gerçek bir koşuda ilk 25 saniye FPS Sync (oyun ~60 FPS), sonra sınırsız
         // (oyun ~25 FPS) toplandı ve "gerçek FPS 31,0" ikisinin ortalamasıydı —
         // hiçbir anlamı yoktu.
-        if (targetFps != targetFpsLastFrame) {
+        //
+        // `hasResolvedTarget` "geçmişte gerçekten çözülmüş bir hedef var mı" demektir.
+        // Sınırsız da çözülmüş bir hedeftir (0), ama `targetFpsLastFrame` zaten 0
+        // olduğu için `!=` karşılaştırması ilk karede yanlış çıkıyor ve alan hiç
+        // yazılmıyordu: sınırsız → sync geçişi hiç fırlanmıyordu. Karşılaştırma
+        // `hasResolvedTarget` ile birlikte yapılır ve alan her çözümde yazılır.
+        if (!hasResolvedTarget || targetFps != targetFpsLastFrame) {
             if (hasResolvedTarget) {
                 onTargetChanged.accept(targetFpsLastFrame, targetFps);
             }
@@ -408,7 +428,17 @@ public class FrameLimiter {
         }
 
         if (targetFps <= 0) {
-            return; // sınırsız (0 ya da FpsSyncOption.UNLIMITED ve üstü)
+            // Sınırsız (0 ya da FpsSyncOption.UNLIMITED ve üstü): sınırlayıcı hiç
+            // çalışmıyor, ama kare zamanlaması YİNE kaydedilir. Taban koşusu
+            // ("sınırlama olmadan oyun ne kadar iyi") tam olarak bu rejimdir;
+            // kayıt yazılmadığında ölçüm hattının giriş kapısı kapanıyor ve
+            // /fpsync status "Henüz kare kaydedilmedi" diyordu.
+            //
+            // Bütçe 0 bilinçli: sınırlayıcı hedefi yok. waitedLastFrame zaten
+            // resetFrameStats() ile 0, yani kayıt boşta rejime düşer.
+            frameBudgetNsLastFrame = 0;
+            nanoTimeLastFrame = nanoTime.getAsLong();
+            return;
         }
 
         long frameBudgetNs = 1_000_000_000L / targetFps;

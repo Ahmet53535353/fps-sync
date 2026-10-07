@@ -98,7 +98,9 @@ public final class FpsSyncStatusCommand {
                 pacing, sync, hz, w, h,
                 ModVersion.resolve(),
                 sync || !SodiumPresence.isPresent(),
-                0));
+                // Sabit 0 geçiliyordu; rapor bunu "SINIRSIZ" olarak yazıyordu
+                // her koşuda. Gerçek çözülmüş hedef okunur (0 = sınırsız).
+                FpsSyncMod.LIMITER.resolvedTargetFps()));
     }
 
       /**
